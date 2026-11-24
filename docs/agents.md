@@ -36,7 +36,12 @@ session). Most agents name them `<server>__js` or `mcp__<server>__js`.
 claude mcp add --scope user nostrings -- nostrings mcp
 ```
 
-Check with `/mcp` in a session. To teach Claude the loop, copy the skill:
+Check with `/mcp` in a session. Non-interactive runs (`claude -p`) need the
+tool allowed up front, since there is no one to answer a permission prompt:
+`claude -p --allowedTools mcp__nostrings__js -- "..."`. Tested 2026-11-24
+(Claude Code 2.1.327, with a temporary `--mcp-config` and
+`--strict-mcp-config`): it opened Calculator, typed `2+2=`, printed `4` and
+exited 0. To teach Claude the loop, copy the skill:
 
 ```bash
 mkdir -p ~/.claude/skills && cp -R "$(npm root -g)/nostrings/skills/nostrings" ~/.claude/skills/

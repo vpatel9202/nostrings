@@ -150,9 +150,16 @@ Input stays in the background: the app is not brought to the front, the
 user's real cursor does not move, and a drawn agent cursor shows where each
 action lands. If this macOS or an app can't take background input, nostrings
 brings the app forward instead. `app.lastRoute` says how the last action got
-there: `accessibility`, `background`, `background-skylight` (Chromium and
-Electron), or `foreground`, with " (focus restored)" appended if the app took
-focus and nostrings gave it back. Pass
+there: `accessibility`, `menu`, `open`, `background`, `background-skylight`
+(Chromium and Electron), `ax-insert (...)` (`typeText` with `exact`), or
+`foreground`, with " (focus restored)" appended if the app took focus and
+nostrings gave it back. Each action sets it, and `~/.nostrings/actions.log`
+records it as `route`. An app that makes itself frontmost up to 2.5 s after
+a background action (the test fixture does, a second after it opens a
+window) is put back behind the user's app, unless the user just clicked
+something or used Cmd+Tab; the next read says so in a `(focus: ...)` line.
+Bringing an app forward on purpose (`activate`, foreground input) ends the
+watch. Pass
 `{foreground: true}` to `click`, `doubleClick`, `rightClick`, `pressKey`,
 `typeText`, `scroll`, or `drag`, or `ui.getApp(name, {foreground: true})` for
 every action, for apps that ignore background input (some Java, Tk, and game
@@ -169,8 +176,14 @@ windows).
   `BackSpace`, `Delete`, `Up`, `Page_Down`, `F5`, `ctrl+a`, `shift+Tab`,
   `super+c` (super is Cmd on macOS). Space-separated keys press in sequence:
   `"ctrl+a BackSpace"`. Keys go to the app's key window.
-- `app.typeText(text)`. Types literal text; `\n` presses Return and `\t`
-  presses Tab.
+- `app.typeText(text, {exact})`. Types literal text; `\n` presses Return and
+  `\t` presses Tab. On macOS typed text goes through the app's text system,
+  so its autocorrect, autocapitalization and autocomplete apply (TextEdit
+  turns `nostrings` into `Nostrings` or `No strings`). `{exact: true}` inserts
+  the text through accessibility into the focused element instead, so it
+  lands as given (`lastRoute` starts with `ax-insert`); it fails with
+  `exact_unavailable` when no text element has focus. Click or `focus()` the
+  field first. `setValue` also sets text exactly, replacing the whole value.
 - `app.scroll(target, dy = 3, {dx})` or `app.scroll(target, {dy, dx})`.
   Positive `dy` scrolls down, in lines.
 - `app.drag(from, to)` or `app.drag([[x, y], [x, y], ...])`.
@@ -211,6 +224,11 @@ Everything here works on the background route unless it says foreground.
 - `app.contextMenu(target, item)` does the same with the element's context
   menu (what a right-click shows).
 - Open pop-up and context menus show in reads, after the window.
+- Firefox: a background `pressKey("Escape")` does not close an open
+  in-window menu (the DevTools Console Settings menu stayed open, also after
+  `Down`); press the button that opened it again, which closes it. An undocked DevTools window has no File, Edit or other menus, so
+  `menu("File > New Window")` fails while it is Firefox's front window;
+  `window(i).raise()` a browser window first.
 
 ### Windows and apps
 
@@ -267,6 +285,8 @@ Everything here works on the background route unless it says foreground.
   person would. Foreground: it uses the real pointer, then puts it back.
   Asks first (`macos:files`).
 - `app.open(pathOrUrl)` opens a file or link in that app, in the background.
+  Firefox loads it in a new tab that is not selected, so a read still shows
+  the selected tab: click the new tab first.
 - `ui.open(pathOrUrl, {app, activate})` opens it in the app that handles it
   (or `app`) and returns that app's handle. Files ask first (`macos:files`).
 - `ui.clipboard.read()` returns `{text, files, image, types}`;
@@ -343,8 +363,9 @@ brought an app forward and the user switches away, the script stops with a
 other apps. Escape stops any script, but only when the user has granted Input
 Monitoring. Do not continue GUI work until the user asks.
 On the foreground route a script brings an app forward at most once per call.
-Every action is appended to `~/.nostrings/actions.log` (typed text is logged
-as a length only).
+Every action is appended to `~/.nostrings/actions.log` when it ends, with the
+route it took or the error code it failed with (typed text is logged as a
+length only).
 
 ## Android
 
@@ -386,7 +407,12 @@ await clock.getAXState();
   (Chrome) close the older one. So if the user has the app running,
   `activate()` fails with `open_on_phone` and changes nothing; ask the user
   to close it, or pass `{foreground: true}` to `getApp`, which also switches
-  an existing handle. While nostrings has a single-copy app on a hidden
+  an existing handle. The screen is chosen by each `getApp` call: one without
+  `foreground` returns the handle to the hidden screen. If nostrings itself
+  opened the app on the phone's screen (it was not running before), that copy
+  is stopped first, so the app restarts there and unsaved state is lost; an app
+  the user had open is never stopped. Ending the session (`js_reset`) likewise
+  stops the apps it opened on the phone's screen. While nostrings has a single-copy app on a hidden
   screen, the user opening it on the phone shows nothing until the session
   ends.
 - Hidden-screen apps stay out of the phone's recent apps.

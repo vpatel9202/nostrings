@@ -169,6 +169,7 @@ export class App {
     try {
       const result = await this.#backend.request(method, { pid: this.pid, ...screen, ...params });
       if (method === "activate") this.#opened = true;
+      if (result?.lateFocusRestored) this.#noteLateFocus(result.lateFocusRestored);
       return result;
     } catch (error) {
       // A hidden screen is the agent's own: the first read or action of a
@@ -182,11 +183,21 @@ export class App {
     }
   }
 
+  // Runs one action and appends it to actions.log when it ends, with the
+  // route it took (lastRoute) or the error code it failed with.
   async #act(action, detail, fn) {
     this.#ctx.checkAbort();
     const device = this.platform === "android" ? { device: this.#backend.label } : {};
-    this.#ctx.log({ app: this.bundleId ?? this.name, action, ...device, ...detail });
-    const result = await fn();
+    const entry = { app: this.bundleId ?? this.name, action, ...device, ...detail };
+    this.lastRoute = null;
+    let result;
+    try {
+      result = await fn();
+    } catch (error) {
+      this.#ctx.log({ ...entry, ...(this.lastRoute ? { route: this.lastRoute } : {}), error: error.code ?? "error" });
+      throw error;
+    }
+    this.#ctx.log({ ...entry, ...(this.lastRoute ? { route: this.lastRoute } : {}) });
     await this.#ctx.settle();
     // Android UI animates most changes; a read right after an action would
     // catch it halfway. Wait until the app has been quiet (no accessibility
@@ -197,6 +208,29 @@ export class App {
       else await this.#call("waitQuiet", { quiet: 150, max: 1500 }).catch(() => new Promise((r) => setTimeout(r, 300)));
     }
     return result;
+  }
+
+  // macOS: {guard: true} asks the helper to keep the user's frontmost app in
+  // front around an accessibility action (press, set, focus, menus, window
+  // controls, open), as it does for background input. Off once this call
+  // brought the app forward on purpose.
+  #guard() {
+    return this.platform === "macos" && this.#useBackground({}) && this.#activatedCell !== this.#ctx.cell ? { guard: true } : {};
+  }
+
+  #axRoute(result, route = "accessibility") {
+    this.lastRoute = result?.focusRestored ? `${route} (focus restored)` : route;
+    return result;
+  }
+
+  // The app took focus after an earlier action had returned (the test
+  // fixture does this a second after opening a window). Said once on the
+  // next read.
+  #noteLateFocus(late) {
+    this.#ctx.log({ app: this.bundleId ?? this.name, action: "focus", late: true, afterMs: late.afterMs, restored: late.restored === true, ...(late.reason ? { reason: late.reason } : {}) });
+    this.#notice += late.restored
+      ? `\n(focus: ${this.name} made itself frontmost ${late.afterMs} ms after an earlier background action; nostrings gave focus back to the user's app)`
+      : `\n(focus: ${this.name} became frontmost ${late.afterMs} ms after an earlier background action and was left there (${late.reason ?? "the user switched to it"}))`;
   }
 
   async windows() {
@@ -581,7 +615,7 @@ export class App {
     if (this.platform === "macos") {
       // A file path or URL, opened in this app without bringing it forward.
       const target = String(intent);
-      return this.#act("open", { target }, () => this.#backend.request("open", { target, bundleId: this.bundleId, activate: false }));
+      return this.#act("open", { target }, async () => this.#axRoute(await this.#call("open", { target, bundleId: this.bundleId, activate: false, ...this.#guard() }), "open"));
     }
     if (this.platform !== "android") throw new Error("app.open() needs a macOS or Android app");
     const spec = typeof intent === "string" ? { data: intent } : intent;
@@ -679,9 +713,10 @@ export class App {
       }
       await this.#pointCursor([x, y]);
       if (press?.index != null && press.actions?.includes("AXPress") && (press.role == null || PRESSABLE.has(press.role))) {
-        const result = await this.#call("performAction", { index: press.index, action: "AXPress" });
+        const result = await this.#call("performAction", { index: press.index, action: "AXPress", ...this.#guard() });
         // Android taps web content instead, and says so.
-        this.lastRoute = result?.route === "touch" ? `${this.screen === "hidden" ? "hidden screen" : "foreground"} (touch)` : "accessibility";
+        if (result?.route === "touch") this.lastRoute = `${this.screen === "hidden" ? "hidden screen" : "foreground"} (touch)`;
+        else this.#axRoute(result);
       } else {
         await this.#deliver("click", { x, y, button, count, mods }, options);
       }
@@ -771,10 +806,10 @@ export class App {
         const routes = [];
         for (const chord of all) {
           if (chord.mods.includes("super")) {
-            const hit = await this.#call("menuShortcut", { key: chord.key, mods: chord.mods }).catch(() => ({ found: false }));
+            const hit = await this.#call("menuShortcut", { key: chord.key, mods: chord.mods, ...this.#guard() }).catch(() => ({ found: false }));
             if (hit.found && hit.pressed) {
               await flush();
-              routes.push(`menu "${hit.title}"`);
+              routes.push(`menu "${hit.title}"${hit.focusRestored ? " (focus restored)" : ""}`);
               await new Promise((r) => setTimeout(r, 120));
               continue;
             }
@@ -792,6 +827,15 @@ export class App {
   async typeText(text, options = {}) {
     if (typeof text !== "string") throw new TypeError("typeText expects a string");
     const detail = this.#ctx.config.log.text ? { text } : { length: text.length };
+    // {exact: true} (macOS): insert through accessibility into the focused
+    // element, so autocorrect and autocomplete cannot change the text.
+    if (options.exact === true) {
+      if (this.platform !== "macos") throw new Error("typeText(text, {exact: true}) is for macOS apps; Android typing is already exact");
+      return this.#act("typeText", { ...detail, exact: true }, async () => {
+        await this.#deliver("insertText", { text }, options);
+        this.lastRoute = `ax-insert (${this.lastRoute})`;
+      });
+    }
     return this.#act("typeText", detail, () => this.#deliver("type", { text }, options));
   }
 
@@ -950,8 +994,7 @@ export class App {
     this.#requireMac("menu");
     const list = typeof path === "string" ? path.split(/\s*>\s*/).filter(Boolean) : [].concat(path);
     return this.#act("menu", { path: list.join(" > ") }, async () => {
-      await this.#call("menuPress", { path: list });
-      this.lastRoute = "menu";
+      this.#axRoute(await this.#call("menuPress", { path: list, ...this.#guard() }), "menu");
     });
   }
 
@@ -985,8 +1028,7 @@ export class App {
         if (!found) throw new Error(`No element matches ${describeQuery(target)}`);
         index = found.index;
       }
-      const result = await this.#call("selectMenuItem", { index, path, context });
-      this.lastRoute = "accessibility";
+      const result = this.#axRoute(await this.#call("selectMenuItem", { index, path, context, ...this.#guard() }));
       return result.title;
     });
   }
@@ -999,7 +1041,7 @@ export class App {
     const run = (op, extra = {}) =>
       this.#act("window", { op, window: index ?? "default", ...extra }, async () => {
         const view = index == null ? await this.#ensureView() : null;
-        await this.#call("windowAction", { op, window: index ?? view.window, ...extra });
+        this.#axRoute(await this.#call("windowAction", { op, window: index ?? view.window, ...extra, ...this.#guard() }));
       });
     return {
       move: (x, y) => run("move", { x, y }),
@@ -1102,16 +1144,16 @@ export class App {
   }
 
   async setValue(index, value) {
-    return this.#act("setValue", { target: `#${index}` }, () => this.#call("setValue", { index, value }));
+    return this.#act("setValue", { target: `#${index}` }, async () => { this.#axRoute(await this.#call("setValue", { index, value, ...this.#guard() })); });
   }
 
   async focus(index) {
-    return this.#act("focus", { target: `#${index}` }, () => this.#call("focusElement", { index }));
+    return this.#act("focus", { target: `#${index}` }, async () => { this.#axRoute(await this.#call("focusElement", { index, ...this.#guard() })); });
   }
 
   async selectText(index, options = {}) {
     return this.#act("selectText", { target: `#${index}` }, () =>
-      this.#call("selectText", { index, start: options.start, length: options.length }),
+      this.#call("selectText", { index, start: options.start, length: options.length, ...this.#guard() }).then((r) => { this.#axRoute(r); }),
     );
   }
 
@@ -1126,7 +1168,7 @@ export class App {
     const match = actions.find((a) => a.toLowerCase().replace(/^ax/, "").replace(/\s+/g, "") === wanted.replace(/^ax/, ""));
     if (!match) throw new Error(`Element ${index} has no action "${action}". It has: ${actions.join(", ") || "none"}`);
     return this.#act("performAction", { target: `#${index}`, action: match }, () =>
-      this.#call("performAction", { index, action: match }),
+      this.#call("performAction", { index, action: match, ...this.#guard() }).then((r) => { this.#axRoute(r); }),
     );
   }
 }
@@ -1165,8 +1207,9 @@ function appSurface(ctx, backend) {
       }
       const existing = apps.get(info.pid);
       if (existing) {
-        // On Android `foreground` picks the screen, so it can change later.
-        if (backend.platform === "android" && typeof options.foreground === "boolean") existing.foreground = options.foreground;
+        // On Android `foreground` picks the screen, so it can change later:
+        // a getApp without it goes back to the hidden screen.
+        if (backend.platform === "android") existing.foreground = options.foreground === true;
         return existing;
       }
       const app = new App(ctx, info, backend);

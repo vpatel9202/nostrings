@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+- macOS focus guard: after a background action the helper watches for 2.5 s
+  and gives focus back once if the target app activated itself (not when the
+  user clicked or pressed a modifier); a late restore is reported on the next
+  read. Every action now sets `lastRoute`, and `actions.log` gets one line per
+  action with its route or error (ns-e8r).
+- `typeText(text, {exact: true})` inserts through Accessibility, so the app's
+  autocorrect and text replacement don't change it; fails with
+  `exact_unavailable` if no text element has focus (ns-2h2).
+- `permissions` checks no longer fire the Screen Recording prompt; only an
+  explicit ask or `probe: true` touches ScreenCaptureKit. Setup's reset hint
+  says `sudo` for ScreenCapture (ns-mlj).
+- `claude -p` with the MCP tool works headless (ns-078); Firefox
+  `about:preferences` reads in the background (ns-4zc); background Escape does
+  not close Gecko popup menus (documented, ns-wat).
 - Scripts run in their own no-privilege process (`ns-iz9`, fixes `ns-tzn`).
   A cell that escapes the `vm` context reaches only the runner: no helper or
   phone connection, an empty environment, and under Node's permission model

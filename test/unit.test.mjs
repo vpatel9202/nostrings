@@ -339,6 +339,10 @@ test("Android handles use the hidden screen unless told otherwise", async () => 
   const first = await api.device().getApp("com.e");
   assert.equal(await api.device().getApp("com.e", { foreground: true }), first);
   assert.equal(first.screen, "phone");
+  // A later getApp without the option goes back to the hidden screen.
+  assert.equal(await api.device().getApp("com.e"), first);
+  assert.equal(first.screen, "hidden");
+  assert.equal((await api.device().getApp("com.e", { foreground: false })).screen, "hidden");
   // Before Android 14 there is no hidden screen.
   assert.equal((await make(device(false)).device().getApp("com.d")).screen, "phone");
 });
@@ -1027,5 +1031,33 @@ test("broker: queue cap, prompts, clamps, log fields and open -b gating", async 
       assert.deepEqual(opened, ["dev.nostrings.fake"]);
     }
     await h.finish();
+  });
+});
+
+test("broker: one log line per request when it ends, with route or error, and late focus restores", async () => {
+  const fsm = await import("node:fs");
+  const pathm = await import("node:path");
+  await withHome("nostrings-route-", async (home) => {
+    const h = await brokerHarness({
+      handlers: {
+        click: () => ({ route: "background", focusRestored: true }),
+        scroll: () => {
+          throw Object.assign(new Error("nope"), { code: "background_unavailable" });
+        },
+        windows: () => ({ windows: [], lateFocusRestored: { afterMs: 900, restored: true } }),
+      },
+    });
+    await h.call("host", "click", { pid: 7, x: 1, y: 1 });
+    await h.call("host", "scroll", { pid: 7, x: 1, y: 1, dy: 3 });
+    await h.call("host", "windows", { pid: 7 });
+    await h.finish();
+    const entries = fsm.readFileSync(pathm.join(home, "actions.log"), "utf8").trim().split("\n").map((l) => JSON.parse(l));
+    assert.deepEqual(entries.map((e) => [e.action, e.route ?? e.error ?? null]), [
+      ["click", "background (focus restored)"],
+      ["scroll", "background_unavailable"],
+      ["focus", null],
+    ]);
+    assert.equal(entries[2].late, true);
+    assert.equal(entries[2].afterMs, 900);
   });
 });

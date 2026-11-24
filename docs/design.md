@@ -205,8 +205,22 @@ the user's frontmost app keeps focus and the real cursor never moves.
   plus an off-screen primer click. Scroll events go through both routes.
   Background events carry no click count unless one is set, and AppKit
   ignores a mouse-down without it.
-- A focus guard notes the frontmost app before each background action and
-  gives it focus back if the target took it anyway.
+- A focus guard notes the frontmost app before each background action
+  (accessibility presses, value changes, menus, window controls and `open`
+  included) and gives it focus back if the target took it anyway. An app
+  can also take it late, after the action has returned (a Firefox report of
+  2026-11-23 described this; it did not reproduce on 2026-11-24). So the
+  helper keeps watching for 2.5 s after the action returns (an NSWorkspace
+  activation observer) and restores once, unless the user's own input
+  explains the switch (a mouse press in the last second, or a modifier
+  change such as Cmd+Tab); that "left alone" branch has not been exercised
+  by a test. Bringing an app forward on purpose ends the watch. The next
+  result reports a late restore and the next read prints it. `smoke --macos`
+  checks this with a fixture window that activates its app a second after it
+  opens: without the guard the fixture became frontmost at about 1.1 s and
+  stayed; with it, the switch was undone before the next 50 ms sample in all
+  but one run (one sample, 67 ms). The guard cannot stop an activation, only
+  revert it, so a brief flicker can show.
 - Each private function is looked up at runtime. If one is missing (a future
   macOS may remove it), the helper says so and nostrings falls back to the
   foreground route: bring the app forward once per call, then post events.
@@ -263,9 +277,10 @@ Computer use can click anything, so approval is part of the product:
   fields: `app`, `action` (the backend method, such as `click` or
   `systemKeys`), and `params`, that request's parameters (for example
   `index`, `x`, `target`, or `length`), nested so they cannot overwrite the
-  other fields. The broker writes it from the requests it forwards,
-  not the runner. Typed text (and `setValue` values) is logged as a length
-  unless `log.text` is true.
+  other fields, then `route` (from the backend's result) or `error` (its
+  error code). The broker writes it from the requests it forwards, when each
+  one ends, not the runner. Typed text (and `setValue` values) is logged as
+  a length unless `log.text` is true.
 - The helper's socket is mode 0600 and checks the peer's uid.
 
 ## Signing and permissions

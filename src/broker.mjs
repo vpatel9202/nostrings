@@ -37,8 +37,8 @@ export const HOST_METHODS = new Set([
   "axTree", "menus", "menuPress", "menuShortcut", "selectMenuItem", "windowAction", "appAction", "hover", "gesture",
   "displays", "approveSurface", "elementAtPoint", "allWindows", "screenCapture", "menuExtras", "systemKeys", "clipboard",
   "pasteStash", "open", "dropFiles", "hitTest", "elementFrame", "performAction", "actionNames", "setValue", "selectText",
-  "focusElement", "keys", "type", "click", "cursor", "makeKey", "move", "scroll", "drag", "screenshot", "forget",
-  "_bringForward",
+  "focusElement", "keys", "type", "insertText", "click", "cursor", "makeKey", "move", "scroll", "drag", "screenshot",
+  "forget", "_bringForward",
 ]);
 
 // Android: any plain method name the server knows (the backend gates every
@@ -89,7 +89,7 @@ function isRead(method) {
 const PID_GATED = new Set([
   "activate", "isActive", "windows", "otherSpaceWindows", "axTree", "menus", "menuPress", "menuShortcut", "selectMenuItem",
   "windowAction", "appAction", "hover", "gesture", "pasteStash", "hitTest", "elementFrame", "performAction", "actionNames",
-  "setValue", "selectText", "focusElement", "keys", "type", "click", "makeKey", "move", "scroll", "drag", "screenshot",
+  "setValue", "selectText", "focusElement", "keys", "type", "insertText", "click", "makeKey", "move", "scroll", "drag", "screenshot",
 ]);
 
 // Numbers in requests: finite and of sane size; timing and repeat params
@@ -120,6 +120,11 @@ export function checkParams(params, depth = 0) {
   return out;
 }
 
+function routeOf(result) {
+  const route = isPlainObject(result) && typeof result.route === "string" ? result.route.slice(0, 100) : null;
+  return route ? { route: result.focusRestored ? `${route} (focus restored)` : route } : {};
+}
+
 function coded(message, code) {
   return Object.assign(new Error(message), { code });
 }
@@ -130,7 +135,7 @@ function isPlainObject(value) {
 
 // A compact, redacted copy of a request's params for the action log.
 // Methods whose string params carry typed or pasted text.
-const TEXT_METHODS = new Set(["type", "setValue", "pasteStash", "systemKeys", "clipboard"]);
+const TEXT_METHODS = new Set(["type", "insertText", "setValue", "pasteStash", "systemKeys", "clipboard"]);
 
 export function summarize(method, params, logText) {
   const out = {};
@@ -471,17 +476,37 @@ export class Broker {
     if (!HOST_METHODS.has(method)) throw coded(`Refused: ${method.slice(0, 60)} is not a method scripts may call`, "bad_request");
     if (method === "_bringForward") return this.#bringForward(cell, raw);
     const params = await this.#hostParams(method, raw);
-    if (!QUIET.has(method)) this.#log({ app: this.#hostApp(method, params), action: method, params: summarize(method, params, cell.config.log?.text) });
+    // One log line per request, written when it ends, with the route the
+    // backend reports or the error code.
+    const entry = QUIET.has(method) ? null : { app: this.#hostApp(method, params), action: method, params: summarize(method, params, cell.config.log?.text) };
     try {
       const result = await this.#host.request(method, params);
       if (["listApps", "resolveApp", "launch", "open"].includes(method)) this.#remember(result);
       if (Number.isInteger(params.pid) && PID_GATED.has(method)) this.#authorizedPids.add(params.pid);
+      if (entry) this.#log({ ...entry, ...routeOf(result) });
+      this.#noteLateFocus(params, result);
       return result;
     } catch (error) {
       // activate_failed comes after the helper's approval passed.
       if (error?.code === "activate_failed" && Number.isInteger(params.pid)) this.#authorizedPids.add(params.pid);
+      if (entry) this.#log({ ...entry, error: typeof error?.code === "string" ? error.code : "error" });
       throw error;
     }
+  }
+
+  // The helper's focus guard reports an app that took focus after an
+  // earlier background action had returned; log it once, as the JS layer did.
+  #noteLateFocus(params, result) {
+    const late = isPlainObject(result) ? result.lateFocusRestored : null;
+    if (!isPlainObject(late)) return;
+    this.#log({
+      app: this.#hostApp("", params),
+      action: "focus",
+      late: true,
+      ...(Number.isFinite(late.afterMs) ? { afterMs: late.afterMs } : {}),
+      restored: late.restored === true,
+      ...(typeof late.reason === "string" ? { reason: late.reason.slice(0, 200) } : {}),
+    });
   }
 
   // Params the helper puts in approval dialogs come from the broker.
@@ -561,10 +586,16 @@ export class Broker {
       this.#log({ app: "android:files", action: "push", device: device.label, path: result?.path, bytes: result?.bytes });
     } else {
       if (!DEVICE_METHOD.test(method) || method === "hello") throw coded(`Refused: ${method.slice(0, 60)} is not a method scripts may call`, "bad_request");
-      if (!QUIET.has(method)) {
-        this.#log({ app: method === "notifications" ? "android:notifications" : typeof raw.pid === "string" ? raw.pid.slice(0, 200) : undefined, action: method, device: device.label, params: summarize(method, raw, cell.config.log?.text) });
+      const entry = QUIET.has(method)
+        ? null
+        : { app: method === "notifications" ? "android:notifications" : typeof raw.pid === "string" ? raw.pid.slice(0, 200) : undefined, action: method, device: device.label, params: summarize(method, raw, cell.config.log?.text) };
+      try {
+        result = await device.request(method, raw);
+      } catch (error) {
+        if (entry) this.#log({ ...entry, error: typeof error?.code === "string" ? error.code : "error" });
+        throw error;
       }
-      result = await device.request(method, raw);
+      if (entry) this.#log({ ...entry, ...routeOf(result) });
     }
     return { result, meta: this.#deviceMeta(serial) };
   }

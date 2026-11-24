@@ -189,7 +189,7 @@ checked 2026-11-03:
 | Default read | Downscaled screenshot | Accessibility text diff |
 | Your phone | No | Android over adb (experimental) |
 | Who can use it | Pro, Max, or Ultra through claude.ai; not Team, Enterprise, Bedrock, Google Cloud, or Foundry | Anyone; it never talks to a model or an account |
-| Scripted runs | Not in `-p` mode | Saved scripts run with no model; the benchmark drove it unattended |
+| Scripted runs | Not in `-p` mode | Saved scripts run with no model; the benchmark drove it unattended; `claude -p` with the nostrings MCP tool works (tested 2026-11-24) |
 | Sessions | One at a time, enforced by a lock file | No global lock; named sessions run side by side |
 | Remembering approvals | This session only | Allow for This Session or Always Allow |
 | Browsers | View-only | Full control once you approve the browser, which is more power and more risk |
@@ -252,8 +252,10 @@ that app. Details: [SECURITY.md](SECURITY.md).
   is no notarized binary yet.
 - Background input on the Mac uses two private macOS calls, with a
   foreground fallback.
-- Only Claude Code has been tested end to end. The other clients' configs
-  follow their documented formats.
+- Only Claude Code has been tested end to end, interactively and with
+  `claude -p` (non-interactive, `--allowedTools mcp__nostrings__js`: it opened
+  Calculator, computed 2+2, printed 4 and exited 0). The other clients'
+  configs follow their documented formats.
 - Known issue: while a background app's pop-up menu is open, macOS sends your
   keystrokes to that app ([details](docs/api.md#known-limits)).
 - nostrings was called glovebox until 0.5.0

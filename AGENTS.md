@@ -134,7 +134,7 @@ npm install
 npm test                                  # unit tests, no GUI, any OS
 node bin/nostrings.mjs setup --rebuild    # rebuild the macOS helper after Swift changes
 node bin/nostrings.mjs smoke              # Calculator, real GUI (macOS)
-node bin/nostrings.mjs smoke --macos      # 51 checks on Nostrings Fixture
+node bin/nostrings.mjs smoke --macos      # 54 checks on Nostrings Fixture
 npm run build:android                     # Android server and test apps (SDK + JDK)
 node bin/nostrings.mjs smoke --android --serial emulator-5554
 ```

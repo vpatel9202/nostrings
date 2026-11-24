@@ -38,7 +38,7 @@ the macOS permissions. See the README for the signing option.
 npm test                 # unit tests and the conformance check on a fake backend; any OS
 nostrings smoke          # GUI test on Calculator (macOS only)
 nostrings smoke --full   # adds background click, drag, and scroll checks in TextEdit (macOS only)
-nostrings smoke --macos  # 51 checks on a test app (macOS only)
+nostrings smoke --macos  # 54 checks on a test app (macOS only)
 nostrings smoke --android --serial emulator-5554   # 20 checks on a test app
 ```
 

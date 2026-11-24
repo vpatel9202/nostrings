@@ -59,10 +59,11 @@ computer. Treat it with the same care as giving someone remote control.
 - **Action log.** `~/.nostrings/actions.log` has one JSON object per action:
   `ts`, `client` (the agent's name), `step` (the call's title, when given),
   `app`, `action`, and `params`, that request's parameters (for example
-  `target`, `index`, or `length`). The host process writes it, not the
-  script's process, and request parameters cannot overwrite the other
-  fields. Typed text is recorded as a length only, unless you set
-  `"log": {"text": true}`.
+  `target`, `index`, or `length`), then `route` or `error` (written when the
+  request ends; a late focus restore adds an `action: "focus"` line). The
+  host process writes it, not the script's process, and request parameters
+  cannot overwrite the other fields. Typed text is recorded as a length
+  only, unless you set `"log": {"text": true}`.
 - **Local only.** Nothing is sent over the network. The helper listens on a
   Unix socket that only your user can open.
 

@@ -173,6 +173,7 @@ func launch(_ params: [String: Any]) throws -> [String: Any] {
     guard let appURL = url else { throw HelperError("Cannot locate app to launch", code: "not_found") }
     let config = NSWorkspace.OpenConfiguration()
     config.activates = params.bool("activate") ?? true
+    if config.activates { FocusGuard.shared.disarm() }
     let done = DispatchSemaphore(value: 0)
     var launched: NSRunningApplication?
     var failure: Error?
@@ -194,6 +195,7 @@ func launch(_ params: [String: Any]) throws -> [String: Any] {
 }
 
 func activate(_ pid: Int) throws {
+    FocusGuard.shared.disarm()
     let app = try runningApp(pid)
     if app.isActive { return }
     if app.isHidden { app.unhide() }
@@ -794,6 +796,45 @@ func typeText(_ params: [String: Any]) throws -> [String: Any] {
     return [:]
 }
 
+// typeText(text, {exact: true}): inserts each run of text through
+// Accessibility (kAXSelectedTextAttribute on the focused element), so the
+// app's text system does not autocorrect or autocomplete it. \n and \t
+// between runs are still sent as Return and Tab keys.
+func insertText(_ params: [String: Any]) throws -> [String: Any] {
+    guard let text = params.string("text") else { throw HelperError("missing text", code: "bad_request") }
+    let pid = try params.requireInt("pid")
+    let app = AXUIElementCreateApplication(pid_t(pid))
+    func focused() throws -> AXUIElement {
+        guard let e: AXUIElement = axAttr(app, kAXFocusedUIElementAttribute) else {
+            throw HelperError("No focused text element to insert into; click or focus a text field first, or type without {exact: true}.", code: "exact_unavailable")
+        }
+        var settable: DarwinBoolean = false
+        if AXUIElementIsAttributeSettable(e, kAXSelectedTextAttribute as CFString, &settable) != .success || !settable.boolValue {
+            throw HelperError("The focused \(axRole(e).replacingOccurrences(of: "AX", with: "").lowercased()) does not take inserted text; type without {exact: true}.", code: "exact_unavailable")
+        }
+        return e
+    }
+    var run = ""
+    func flush() throws {
+        guard !run.isEmpty else { return }
+        let err = AXUIElementSetAttributeValue(try focused(), kAXSelectedTextAttribute as CFString, run as CFString)
+        if err != .success { throw HelperError("Inserting text failed (AXError \(err.rawValue))", code: "exact_unavailable") }
+        run = ""
+        usleep(20000)
+    }
+    _ = try focused()
+    for ch in text {
+        if ch == "\n" || ch == "\r" || ch == "\t" || ch == "\r\n" {
+            try flush()
+            try pressKeys(["chords": [["key": ch == "\t" ? "Tab" : "Return", "mods": [String]()]]])
+            continue
+        }
+        run.append(ch)
+    }
+    try flush()
+    return ["inserted": true]
+}
+
 func mouseButton(_ name: String?) -> (CGMouseButton, CGEventType, CGEventType, CGEventType) {
     switch name {
     case "right": return (.right, .rightMouseDown, .rightMouseUp, .rightMouseDragged)
@@ -1126,7 +1167,10 @@ func sheetWindowId(pid: pid_t, parent: UInt32) -> UInt32? {
 // Runs `body` with input routed to the background app named in params, and
 // restores the user's frontmost app if the target took focus anyway.
 func withInputRoute(_ params: [String: Any], _ kind: InputKind, _ body: () throws -> [String: Any]) throws -> [String: Any] {
-    guard params.string("mode") == "background" else { return try body() }
+    guard params.string("mode") == "background" else {
+        FocusGuard.shared.disarm()   // foreground input: the app is in front on purpose
+        return try body()
+    }
     guard SkyLight.available else {
         throw HelperError("Background input is unavailable on this macOS (private SkyLight functions missing).", code: "background_unavailable")
     }
@@ -1158,18 +1202,149 @@ func withInputRoute(_ params: [String: Any], _ kind: InputKind, _ body: () throw
     let route = BackgroundRoute(pid: pid, windowId: windowId, origin: bounds.origin, localLocation: params.string("windowLocation") != "screen")
     backgroundRoute = route
     defer { backgroundRoute = nil }
-    var result = try body()
-    usleep(60000)
-    var restored = false
-    if let front = front, front.processIdentifier != pid,
-       NSWorkspace.shared.frontmostApplication?.processIdentifier == pid {
-        // The target took focus anyway: give it back to the user's app.
-        AXUIElementSetAttributeValue(AXUIElementCreateApplication(front.processIdentifier), kAXFrontmostAttribute as CFString, kCFBooleanTrue)
-        restored = true
-    }
-    result["route"] = route.chromium ? "background-skylight" : "background"
-    result["focusRestored"] = restored
+    var result = try FocusGuard.shared.around(pid: pid, front: front) { try body() }
+    if result["route"] == nil { result["route"] = route.chromium ? "background-skylight" : "background" }
     return result
+}
+
+// MARK: - Focus guard
+//
+// A background action must leave the user's frontmost app in front. An app
+// can activate itself in response, even after the action has returned (a
+// Firefox report described this; the test fixture does it on purpose). So
+// each background action is checked right after it runs, and then watched
+// for `watchSeconds`: if the target app becomes frontmost in that time and the
+// user's input does not explain it (no mouse press just before, no Cmd+Tab),
+// the user's app gets focus back, once per watch. A late restore is reported
+// in the next guarded result as `lateFocusRestored`.
+final class FocusGuard {
+    static let shared = FocusGuard()
+    static let watchSeconds = 2.5
+
+    private let lock = NSLock()
+    private var targetPid: pid_t = 0
+    private var userPid: pid_t = 0        // whose focus to keep
+    private var armedAt = Date.distantPast
+    private var deadline = Date.distantPast
+    private var restoredThisWatch = false
+    private var restores = 0
+    private var late: [String: Any]?
+    private var observer: NSObjectProtocol?
+
+    // Called once on the main thread at startup.
+    func install() {
+        guard observer == nil else { return }
+        observer = NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: nil) { [weak self] note in
+            guard let app = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication else { return }
+            self?.activated(app)
+        }
+    }
+
+    // True when the user's own input could explain `pid` becoming frontmost:
+    // a mouse press in the last second (on its window, the Dock, or a link in
+    // another app), or a modifier change such as Cmd+Tab. Background events
+    // go to the process, not the HID system, so they do not count here.
+    private func userCaused(_ pid: pid_t, since: Date) -> Bool {
+        let window = min(Date().timeIntervalSince(since), 1.0)
+        let mouse = [CGEventType.leftMouseDown, .rightMouseDown, .otherMouseDown].map { CGEventSource.secondsSinceLastEventType(.hidSystemState, eventType: $0) }.min() ?? .infinity
+        if mouse < window { return true }
+        return CGEventSource.secondsSinceLastEventType(.hidSystemState, eventType: .flagsChanged) < min(window, 0.8)
+    }
+
+    private func giveBack(to pid: pid_t) {
+        AXUIElementSetAttributeValue(AXUIElementCreateApplication(pid), kAXFrontmostAttribute as CFString, kCFBooleanTrue)
+    }
+
+    private func activated(_ app: NSRunningApplication) {
+        lock.lock()
+        let now = Date()
+        guard now < deadline, userPid != 0 else { lock.unlock(); return }
+        let pid = app.processIdentifier
+        if pid == getpid() { lock.unlock(); return }   // our own dialogs
+        if pid != targetPid {
+            // The user (or something else) moved on: that is the app to keep.
+            userPid = pid
+            lock.unlock()
+            return
+        }
+        let ms = Int(now.timeIntervalSince(armedAt) * 1000)
+        let user = userPid
+        let since = armedAt
+        if restoredThisWatch || user == targetPid { lock.unlock(); return }
+        if userCaused(pid, since: since) {
+            late = ["pid": Int(pid), "app": app.localizedName ?? "", "afterMs": ms, "restored": false, "reason": "user input"]
+            deadline = now
+            lock.unlock()
+            return
+        }
+        restoredThisWatch = true
+        restores += 1
+        late = ["pid": Int(pid), "app": app.localizedName ?? "", "afterMs": ms, "restored": true]
+        lock.unlock()
+        giveBack(to: user)
+    }
+
+    // nostrings itself is bringing an app forward (activate, foreground
+    // input, a launch or open that activates): stop watching, or the guard
+    // would pull the user's old app back over it.
+    func disarm() {
+        lock.lock(); defer { lock.unlock() }
+        deadline = .distantPast
+        userPid = 0
+        if late?["restored"] as? Bool == false { late = nil }
+    }
+
+    // Takes the report of a restore that happened after an earlier result
+    // about `pid`, for the next result about that app (any request).
+    func takeLate(pid: Int) -> [String: Any]? {
+        lock.lock(); defer { lock.unlock() }
+        guard var l = late, l["pid"] as? Int == pid, Date() >= deadline || (l["restored"] as? Bool) == true else { return nil }
+        late = nil
+        l["pid"] = nil
+        return l
+    }
+
+    // Runs `body` (a background action on `pid`) and keeps `front` in front.
+    func around(pid: pid_t, front: NSRunningApplication?, _ body: () throws -> [String: Any]) rethrows -> [String: Any] {
+        lock.lock()
+        let userApp = front?.processIdentifier ?? 0
+        let armed = userApp != 0 && userApp != pid
+        if armed {
+            restoredThisWatch = false
+            targetPid = pid
+            userPid = userApp
+            armedAt = Date()
+            deadline = .distantFuture   // open while the action runs
+        }
+        let before = restores
+        lock.unlock()
+        var result = try body()
+        usleep(60000)
+        lock.lock()
+        var restored = restores != before
+        if armed, !restoredThisWatch, NSWorkspace.shared.frontmostApplication?.processIdentifier == pid {
+            // The target took focus during the action: give it back now.
+            restoredThisWatch = true
+            restores += 1
+            restored = true
+            late = nil
+            lock.unlock()
+            giveBack(to: userApp)
+            lock.lock()
+        }
+        if armed { deadline = Date().addingTimeInterval(FocusGuard.watchSeconds) }
+        if restored, late?["restored"] as? Bool == true { late = nil }
+        lock.unlock()
+        result["focusRestored"] = restored
+        return result
+    }
+}
+
+// The AX-only actions (press, set a value, focus, menus, window controls,
+// open) are background actions too when the client says so (`guard: true`).
+func guarded(_ params: [String: Any], _ body: () throws -> [String: Any]) throws -> [String: Any] {
+    guard params.bool("guard") == true, let pid = params.int("pid") else { return try body() }
+    return try FocusGuard.shared.around(pid: pid_t(pid), front: NSWorkspace.shared.frontmostApplication, body)
 }
 
 // MARK: - Chromium and Electron accessibility
@@ -1810,6 +1985,7 @@ func openTarget(_ connection: Connection, _ params: [String: Any]) throws -> [St
     try authorize(connection, bundleId: handlerId, name: name)
     let config = NSWorkspace.OpenConfiguration()
     config.activates = params.bool("activate") ?? false
+    if config.activates { FocusGuard.shared.disarm() }
     let done = DispatchSemaphore(value: 0)
     var opened: NSRunningApplication?
     var failure: Error?
@@ -2029,7 +2205,7 @@ func screenshot(_ params: [String: Any]) throws -> [String: Any] {
     if done.wait(timeout: .now() + 15) == .timedOut { throw HelperError("Screenshot timed out") }
     if let error = failure as? HelperError { throw error }
     if let error = failure {
-        if !screenCaptureAllowed() {
+        if !screenCaptureAllowed(probe: true) {
             throw HelperError("Screen Recording permission is missing for Nostrings Helper. Run `nostrings doctor`.", code: "permission")
         }
         throw HelperError("Screenshot failed: \(error.localizedDescription)")
@@ -2039,9 +2215,14 @@ func screenshot(_ params: [String: Any]) throws -> [String: Any] {
     return ["data": data.base64EncodedString(), "width": image.width, "height": image.height, "mimeType": format == "jpeg" ? "image/jpeg" : "image/png"]
 }
 
-// True when ScreenCaptureKit will hand us window content.
-func screenCaptureAllowed() -> Bool {
+// True when ScreenCaptureKit will hand us window content. With `probe`, a
+// process whose preflight still says no (it can cache the answer from before
+// a grant) asks ScreenCaptureKit itself. That probe is a real capture request:
+// without the grant it shows the Screen Recording prompt, so only a request
+// that means to ask (ask: "screenRecording", or probe: true) runs it.
+func screenCaptureAllowed(probe: Bool) -> Bool {
     if CGPreflightScreenCaptureAccess() { return true }
+    if !probe { return false }
     let done = DispatchSemaphore(value: 0)
     var ok = false
     Task {
@@ -2404,12 +2585,23 @@ func permissions(_ params: [String: Any]) -> [String: Any] {
     let ax = AXIsProcessTrustedWithOptions(options)
     var input = CGPreflightListenEventAccess()
     if ask == "inputMonitoring" && !input { input = CGRequestListenEventAccess() }
-    var screen = screenCaptureAllowed()
+    // A check (no ask) never prompts: setup's first check, doctor and the
+    // waits between prompts all come through here.
+    var screen = screenCaptureAllowed(probe: params.bool("probe") == true)
     if ask == "screenRecording" && !screen { screen = CGRequestScreenCaptureAccess() }
     return ["accessibility": ax, "screenRecording": screen, "escapeWatcher": escapeWatcherActive(), "inputMonitoring": input]
 }
 
 func handle(_ connection: Connection, _ method: String, _ params: [String: Any]) throws -> Any {
+    let result = try dispatch(connection, method, params)
+    if var dict = result as? [String: Any], let pid = params.int("pid"), let late = FocusGuard.shared.takeLate(pid: pid) {
+        dict["lateFocusRestored"] = late
+        return dict
+    }
+    return result
+}
+
+func dispatch(_ connection: Connection, _ method: String, _ params: [String: Any]) throws -> Any {
     try gate(connection, method, params)
     switch method {
     case "hello":
@@ -2426,10 +2618,10 @@ func handle(_ connection: Connection, _ method: String, _ params: [String: Any])
     case "otherSpaceWindows": return otherSpaceWindows(try params.requireInt("pid"))
     case "axTree": return try axTree(params)
     case "menus": return try menuList(params)
-    case "menuPress": return try menuPress(params)
-    case "menuShortcut": return try menuShortcut(params)
-    case "selectMenuItem": return try selectMenuItem(params)
-    case "windowAction": return try windowAction(params)
+    case "menuPress": return try guarded(params) { try menuPress(params) }
+    case "menuShortcut": return try guarded(params) { try menuShortcut(params) }
+    case "selectMenuItem": return try guarded(params) { try selectMenuItem(params) }
+    case "windowAction": return try guarded(params) { try windowAction(params) }
     case "appAction": return try appAction(params)
     case "hover": return try withInputRoute(params, .mouse) { try hover(params) }
     case "gesture": return try withInputRoute(params, .mouse) { try gesture(params) }
@@ -2453,21 +2645,22 @@ func handle(_ connection: Connection, _ method: String, _ params: [String: Any])
         return try systemKeys(params)
     case "clipboard": return try clipboard(params)
     case "pasteStash": return try pasteStash(params)
-    case "open": return try openTarget(connection, params)
+    case "open": return try guarded(params) { try openTarget(connection, params) }
     case "dropFiles": return try dropFiles(params)
     case "hitTest": return try hitTest(params)
     case "elementFrame": return try elementFrame(params)
-    case "performAction": return try performAction(params)
+    case "performAction": return try guarded(params) { try performAction(params) }
     case "actionNames": return try actionNames(params)
-    case "setValue": return try setValue(params)
-    case "selectText": return try selectText(params)
+    case "setValue": return try guarded(params) { try setValue(params) }
+    case "selectText": return try guarded(params) { try selectText(params) }
     case "focusElement":
         var p = params
         p["attribute"] = kAXFocusedAttribute
         p["value"] = true
-        return try setValue(p)
+        return try guarded(p) { try setValue(p) }
     case "keys": return try withInputRoute(params, .keys) { try withKeyTarget(params) { try pressKeys(params) } }
     case "type": return try withInputRoute(params, .keys) { try withKeyTarget(params) { try typeText(params) } }
+    case "insertText": return try withInputRoute(params, .keys) { try withKeyTarget(params) { try insertText(params) } }
     case "click": return try withInputRoute(params, .mouse) { try click(params) }
     case "cursor": return try cursorCommand(params)
     case "makeKey":
@@ -2626,6 +2819,7 @@ if CommandLine.arguments.contains("--request-permissions") {
     _ = permissions(["prompt": true])
 }
 _ = startEscapeWatcher()
+FocusGuard.shared.install()
 let server = listen(at: socketPath)
 Thread.detachNewThread { acceptLoop(server) }
 // Quit after a long stretch with no clients; the next client relaunches us.
