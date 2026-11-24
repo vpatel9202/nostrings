@@ -56,7 +56,8 @@ export async function runSmoke({ screenshot = true, full = false } = {}) {
   const results = [];
   const step = (name, pass, detail) => {
     results.push(pass);
-    process.stdout.write(`${pass ? "PASS" : "FAIL"}  ${name}${detail ? `\n      ${detail.split("\n").join("\n      ")}` : ""}\n`);
+    const text = detail == null ? "" : String(detail).trim();
+    process.stdout.write(`${pass ? "PASS" : "FAIL"}  ${name}${text ? `\n      ${text.split("\n").join("\n      ")}` : ""}\n`);
   };
   try {
     const init = await mcp.request("initialize", {
@@ -106,7 +107,8 @@ await calc.getAXState();`);
 
     await mcp.request("tools/call", { name: "js_reset", arguments: {} });
     const after = await mcp.js("typeof calc");
-    step("js_reset drops the binding", !after.isError && after.text.trim() === "undefined", after.text);
+    const resetOk = !after.isError && after.text.trim() === "undefined";
+    step("js_reset drops the binding", resetOk, resetOk ? undefined : after.text);
 
     if (full) {
       // Raw mouse input in a background text editor: a click places the caret,
@@ -182,7 +184,8 @@ export async function runAndroidSmoke({ serial, keep = false } = {}) {
   const results = [];
   const step = (name, pass, detail) => {
     results.push(pass);
-    process.stdout.write(`${pass ? "PASS" : "FAIL"}  ${name}${!pass && detail ? `\n      ${String(detail).split("\n")[0]}` : ""}\n`);
+    const text = detail == null ? "" : String(detail).trim().split("\n")[0];
+    process.stdout.write(`${pass ? "PASS" : "FAIL"}  ${name}${!pass && text ? `\n      ${text}` : ""}\n`);
   };
   if (!fs.existsSync(FIXTURE_APK)) {
     step("fixture app built", false, "Run: npm run build:android");
@@ -414,7 +417,8 @@ export async function runMacSmoke({ keep = false, foreground = true } = {}) {
   const results = [];
   const step = (name, pass, detail) => {
     results.push(pass);
-    process.stdout.write(`${pass ? "PASS" : "FAIL"}  ${name}${detail && !pass ? `\n      ${String(detail).split("\n").slice(0, 6).join("\n      ")}` : ""}\n`);
+    const text = detail == null ? "" : String(detail).trim();
+    process.stdout.write(`${pass ? "PASS" : "FAIL"}  ${name}${!pass && text ? `\n      ${text.split("\n").slice(0, 6).join("\n      ")}` : ""}\n`);
   };
   process.stdout.write("Building Nostrings Fixture if needed...\n");
   await fixture.buildFixture();
