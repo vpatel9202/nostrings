@@ -7,6 +7,7 @@ import { App, findWindow, pickWindow } from "../src/api.mjs";
 import { diffTrees, formatTree } from "../src/axformat.mjs";
 import { toImage, toScreen, viewFor } from "../src/geometry.mjs";
 import { parseChord, parseKeys } from "../src/keys.mjs";
+import { createCellContext } from "../src/realm.mjs";
 import { transformCell } from "../src/transform.mjs";
 
 function session() {
@@ -535,4 +536,23 @@ test("repeat OCR prints only new or moved text and counts what is gone", async (
   assert.match(d, /\+ "MRN 12345"/);
   assert.match(d, /2 unchanged not shown, 1 gone/);
   assert.doesNotMatch(d, /"Name"/);
+});
+
+test("cell realm: no fetch, Buffer, URL or string eval; globalThis.constructor is not the host Function", async () => {
+  const context = createCellContext({ setTimeout, TextEncoder, console: {} });
+  const run = (code) => vm.runInContext(transformCell(code), context);
+  assert.equal(await run("typeof fetch"), "undefined");
+  assert.equal(await run("typeof Buffer"), "undefined");
+  assert.equal(await run("typeof URL"), "undefined");
+  // The global's constructor, if any, belongs to the cell realm, not the host.
+  assert.notEqual(await run("globalThis.constructor?.constructor"), Function);
+  assert.notEqual(await run("globalThis.constructor"), Object);
+  assert.equal(await run("typeof process"), "undefined");
+  assert.equal(await run("btoa('hi')"), "aGk=");
+  assert.equal(await run("atob('aGk=')"), "hi");
+  await assert.rejects(run('eval("1")'), /code generation|EvalError/i);
+  await assert.rejects(run('new Function("return 1")'), /code generation|EvalError/i);
+  await assert.rejects(run('(function () {}).constructor("return 1")'), /code generation|EvalError/i);
+  await run("const keep = 5");
+  assert.equal(await run("keep + 1"), 6);
 });

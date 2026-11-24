@@ -87,8 +87,10 @@ dialogs, and an agent that could press them would approve itself.
   `process.env`, but that is not a sandbox. Cells run in a Node `vm` context,
   which is not a security boundary: a script can reach the kernel's real
   `process` (for example through a built-in's constructor) and run code as
-  you, and `fetch` is available to scripts. Treat anything that can send a cell
-  as able to run code on your Mac, not only to use approved apps. Isolating the
+  you. Cells no longer get `fetch`, `Buffer`, `URL` or string `eval`, which
+  removes the easy paths, but host functions given to cells still reach the host
+  process; a separate low-privilege process is planned. Treat anything that can
+  send a cell as able to run code on your Mac, not only to use approved apps. Isolating the
   kernel is tracked as beads issue `ns-tzn`. Separately, an approved app can
   reach whatever that app can reach. Finder is not on the ask-first list, and
   approving it lets an agent read or change any file Finder can.

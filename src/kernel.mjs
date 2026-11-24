@@ -11,6 +11,7 @@ import { fileURLToPath } from "node:url";
 import { createApi } from "./api.mjs";
 import { createBackend, createDeviceBackend } from "./backends/index.mjs";
 import { loadConfig, paths } from "./config.mjs";
+import { createCellContext } from "./realm.mjs";
 import { listScripts, readScript, saveScript, wrapScript } from "./scripts.mjs";
 import { transformCell } from "./transform.mjs";
 
@@ -206,14 +207,11 @@ function makeContext() {
     clearInterval,
     queueMicrotask,
     structuredClone,
-    URL,
     TextEncoder,
     TextDecoder,
-    Buffer,
-    fetch,
     process: { platform: process.platform, env: {} },
   };
-  return vm.createContext(sandbox, { name: "nostrings" });
+  return createCellContext(sandbox, { name: "nostrings" });
 }
 
 let context = makeContext();

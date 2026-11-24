@@ -2,6 +2,10 @@
 
 ## 0.6.0 (2026-11-19)
 
+- Cells no longer get `fetch`, `Buffer`, `URL` or string `eval`/`new Function`,
+  and `globalThis.constructor` no longer reaches the host `Function` (`atob`
+  and `btoa` are available instead). Hardening only; `vm` is still not a
+  security boundary (`ns-tzn`).
 - `nostrings init`: one command from install to a working agent. On a Mac it
   offers the signing certificate, builds the helper and asks for each
   permission; it lists Android devices; it finds Claude Code, Codex CLI,
