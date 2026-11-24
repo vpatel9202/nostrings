@@ -53,6 +53,9 @@ jobs:
           # App's token, which can write to the repo.
           github_token: ${{ github.token }}
           prompt: "Read .github/discovery-prompt.md and follow it exactly."
+          # Print the full transcript in the job log (public on this repo) so a
+          # run that files nothing can be diagnosed.
+          show_full_output: true
           claude_args: >-
             --model opus
             --max-turns 60
