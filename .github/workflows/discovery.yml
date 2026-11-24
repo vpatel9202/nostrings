@@ -1,6 +1,6 @@
 name: discovery
-# Daily discovery loop. Claude reads the repo and the web and files at most
-# three GitHub issues labeled `triage`. It cannot change code, for two separate
+# Discovery loop, every other day. Claude reads the repo and the web and files at most
+# five GitHub issues labeled `triage`. It cannot change code, for two separate
 # reasons: the job token below can't write contents, and Claude has no Edit,
 # Write, or push tool.
 #
@@ -8,7 +8,7 @@ name: discovery
 # your Mac, scripts/import-approved.mjs pulls them into beads (SessionStart hook).
 on:
   schedule:
-    - cron: "17 22 * * *" # daily, 22:17 UTC (4:17 pm Central standard time)
+    - cron: "17 22 */2 * *" # odd days of the month, 22:17 UTC (4:17 pm CST)
   workflow_dispatch:
 
 permissions:
