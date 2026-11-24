@@ -81,9 +81,12 @@ real phone may also be connected.
 ## Architecture Overview
 
 nostrings is a persistent JavaScript session for driving GUIs. `src/mcp.mjs`
-(MCP stdio) and `src/daemon.mjs` (CLI) host `src/session.mjs`, which runs
-`src/kernel.mjs` in its own process. The kernel evaluates cells in a `vm`
-context with the `ui` API from `src/api.mjs`. Backends speak the protocol in
+(MCP stdio) and `src/daemon.mjs` (CLI) host `src/session.mjs` and
+`src/broker.mjs` (backends, approvals, action log). Cells run in
+`src/runner.mjs`, a no-privilege process started by `src/isolation.mjs`
+(node --permission, Seatbelt on macOS), which evaluates them in a `vm`
+context with the `ui` API from `src/api.mjs` and sends every backend request
+to the broker over stdio. Backends speak the protocol in
 docs/backend-protocol.md: `src/backends/macos.mjs` talks to the Swift helper
 (`native/macos/NostringsHelper.swift`) over a Unix socket, and
 `src/backends/android.mjs` talks to a Java server (`native/android/`) over

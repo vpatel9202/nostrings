@@ -575,3 +575,323 @@ test("cell realm: no fetch, Buffer, URL or string eval; globalThis.constructor i
   await run("const keep = 5");
   assert.equal(await run("keep + 1"), 6);
 });
+
+// --- Runner isolation (ns-iz9). Cells run in a no-privilege runner process;
+// the broker in the host process holds the backends. These start the real
+// runner, with fake backends, and never touch the GUI.
+
+const DENIED = ["ERR_ACCESS_DENIED", "EPERM", "EACCES"];
+
+async function withHome(prefix, fn) {
+  const fsm = await import("node:fs");
+  const osm = await import("node:os");
+  const pathm = await import("node:path");
+  const home = fsm.mkdtempSync(pathm.join(osm.tmpdir(), prefix));
+  const before = process.env.NOSTRINGS_HOME;
+  process.env.NOSTRINGS_HOME = home;
+  try {
+    return await fn(home);
+  } finally {
+    if (before === undefined) delete process.env.NOSTRINGS_HOME;
+    else process.env.NOSTRINGS_HOME = before;
+    fsm.rmSync(home, { recursive: true, force: true });
+  }
+}
+
+async function fakeHost(handlers = {}) {
+  const { EventEmitter } = await import("node:events");
+  const calls = [];
+  return Object.assign(new EventEmitter(), {
+    platform: "macos",
+    calls,
+    async request(method, params) {
+      calls.push([method, params]);
+      if (handlers[method]) return handlers[method](params);
+      if (method === "listApps") return [{ name: "Fake", bundleId: "dev.nostrings.fake", pid: 4242, running: true }];
+      if (method === "resolveApp") return { name: "Fake", bundleId: "dev.nostrings.fake", pid: 4242, running: true, path: "/Applications/Fake.app" };
+      throw Object.assign(new Error(`fake host: unexpected ${method}`), { code: "bad_request" });
+    },
+    close() {},
+  });
+}
+
+test("runner: a cell that escapes vm still cannot write files, connect, start processes or read the environment", async () => {
+  const fsm = await import("node:fs");
+  const osm = await import("node:os");
+  const pathm = await import("node:path");
+  const net = await import("node:net");
+  const http = await import("node:http");
+  const { Session } = await import("../src/session.mjs");
+  await withHome("nostrings-iso-", async (home) => {
+    const sock = pathm.join(osm.tmpdir(), `ns-${process.pid}.sock`);
+    fsm.rmSync(sock, { force: true });
+    const unixServer = net.createServer((c) => c.end());
+    await new Promise((r) => unixServer.listen(sock, r));
+    const httpServer = http.createServer((q, r) => r.end("ok"));
+    await new Promise((r) => httpServer.listen(0, "127.0.0.1", r));
+    const port = httpServer.address().port;
+    // Positive controls: from this (unrestricted) process both connect.
+    assert.equal(await (await fetch(`http://127.0.0.1:${port}/`)).text(), "ok");
+    await new Promise((resolve, reject) => {
+      const c = net.connect(sock);
+      c.once("connect", () => {
+        c.destroy();
+        resolve();
+      });
+      c.once("error", reject);
+    });
+    process.env.NOSTRINGS_TEST_SENTINEL = "visible";
+    const target = pathm.join(home, "escaped-write.txt");
+    const session = new Session({ client: "unit", brokerOptions: { host: await fakeHost() } });
+    try {
+      const code = `
+        const p = setTimeout.constructor("return process")();
+        const g = setTimeout.constructor("return globalThis")();
+        const load = p.getBuiltinModule;
+        const r = { escaped: typeof p.pid, hasLoader: typeof load };
+        const code = (e) => e?.cause?.code ?? e?.code ?? String(e);
+        if (load) {
+          const fs = load("node:fs"), cp = load("node:child_process"), net = load("node:net");
+          try { fs.writeFileSync(${JSON.stringify(target)}, "x"); r.write = "wrote" } catch (e) { r.write = code(e) }
+          try { cp.execFileSync("/bin/echo", ["hi"]); r.child = "ran" } catch (e) { r.child = code(e) }
+          const connect = (o) => new g.Promise((res) => { try { const s = net.connect(o); s.on("connect", () => { s.destroy(); res("connected") }); s.on("error", (e) => res(code(e))) } catch (e) { res(code(e)) } });
+          r.unix = await connect({ path: ${JSON.stringify(sock)} });
+          r.tcp = await connect({ host: "127.0.0.1", port: ${port} });
+        }
+        try { await g.fetch("http://127.0.0.1:${port}/"); r.fetch = "fetched" } catch (e) { r.fetch = code(e) }
+        r.env = p.env.NOSTRINGS_TEST_SENTINEL ?? null;
+        try { p.kill(p.ppid, 0); r.signal = "allowed" } catch (e) { r.signal = code(e) }
+        JSON.stringify(r)`;
+      const result = await session.run(code, { timeoutMs: 20_000 });
+      assert.ok(result.ok, JSON.stringify(result));
+      const r = JSON.parse(result.content.at(-1).text);
+      const iso = session.isolation;
+      // The escape itself works: vm is not the boundary, the process is.
+      assert.equal(r.escaped, "number");
+      assert.equal(r.env, null, "the runner gets an empty environment");
+      assert.ok(iso.fsWriteDenied && iso.childDenied, JSON.stringify(iso));
+      if (r.hasLoader === "function") {
+        assert.ok(DENIED.includes(r.write), `file write: ${r.write}`);
+        assert.equal(fsm.existsSync(target), false);
+        assert.ok(DENIED.includes(r.child), `child process: ${r.child}`);
+        if (iso.networkDenied) {
+          assert.ok(DENIED.includes(r.unix), `unix socket: ${r.unix}`);
+          assert.ok(DENIED.includes(r.tcp), `tcp: ${r.tcp}`);
+          assert.ok(DENIED.includes(r.fetch), `fetch: ${r.fetch}`);
+        }
+      }
+      // (Node 20 before 20.16 has no process.getBuiltinModule; the runner's
+      // own probe, checked through `iso`, covers the same ground.)
+      const [major] = process.versions.node.split(".").map(Number);
+      if (process.platform === "darwin") {
+        assert.equal(iso.seatbelt, true, `Seatbelt not applied: ${iso.warnings.join("; ")}`);
+        assert.equal(r.signal, "EPERM", "Seatbelt denies signals to other processes");
+        assert.equal(iso.networkDenied, true);
+      } else if (major >= 25) {
+        assert.equal(iso.networkDenied, true);
+      } else {
+        // Linux, Node < 25: Node cannot deny the network; the session says so.
+        assert.ok(iso.networkDenied || iso.warnings.some((w) => /not network-isolated/.test(w)), JSON.stringify(iso));
+      }
+    } finally {
+      delete process.env.NOSTRINGS_TEST_SENTINEL;
+      session.reset();
+      unixServer.close();
+      httpServer.close();
+      fsm.rmSync(sock, { force: true });
+    }
+  });
+});
+
+test("runner: after Escape the host refuses the cell's requests, even forged ones", async () => {
+  const fsm = await import("node:fs");
+  const pathm = await import("node:path");
+  const { Session } = await import("../src/session.mjs");
+  await withHome("nostrings-stop-", async (home) => {
+    const host = await fakeHost();
+    const session = new Session({ client: "unit", brokerOptions: { host } });
+    try {
+      const listed = () => host.calls.filter(([m]) => m === "listApps").length;
+      const pending = session.run(
+        `await ui.listApps({ emit: false });
+         await sleep(500);
+         // A taken-over runner writes a request straight to the pipe.
+         const p = setTimeout.constructor("return process")();
+         const fs = p.getBuiltinModule?.("node:fs");
+         fs?.writeSync(1, JSON.stringify({ op: "call", rid: 999999, target: "host", method: "listApps", params: {} }) + "\\n");
+         await sleep(200);
+         await ui.listApps({ emit: false });
+         "not reached"`,
+        { timeoutMs: 20_000 },
+      );
+      for (let i = 0; i < 200 && listed() === 0; i++) await new Promise((r) => setTimeout(r, 20));
+      assert.equal(listed(), 1);
+      host.emit("escape");
+      const result = await pending;
+      assert.equal(result.ok, false);
+      assert.match(result.content.at(-1).text, /Stopped: the user pressed Escape/);
+      assert.equal(listed(), 1, "no request reached the backend after the stop");
+      assert.match(fsm.readFileSync(pathm.join(home, "actions.log"), "utf8"), /"action":"stopped"/);
+      // The stop lasts for that cell only.
+      const next = await session.run("(await ui.listApps({ emit: false })).length", { timeoutMs: 20_000 });
+      assert.deepEqual(next, { ok: true, content: [{ type: "text", text: "1" }] });
+    } finally {
+      session.reset();
+    }
+  });
+});
+
+test("runner: a shown screenshot survives many silent captures in the same call", async () => {
+  const { Session } = await import("../src/session.mjs");
+  await withHome("nostrings-shots-", async () => {
+    let n = 0;
+    const host = await fakeHost({
+      windows: () => [{ index: 0, title: "W", frame: [0, 0, 400, 300], scale: 2, focused: true, main: true, minimized: false, windowId: 1 }],
+      screenshot: ({ width, height }) => ({ data: Buffer.from(`shot-${n++}`).toString("base64"), width, height, mimeType: "image/png" }),
+    });
+    const session = new Session({ client: "unit", brokerOptions: { host } });
+    try {
+      const result = await session.run(
+        `const app = await ui.getApp("Fake");
+         await app.getScreenshot();
+         for (let i = 0; i < 40; i++) await app.getScreenshot({ emit: false });
+         "done"`,
+        { timeoutMs: 20_000 },
+      );
+      assert.ok(result.ok, JSON.stringify(result).slice(0, 500));
+      const images = result.content.filter((c) => c.type === "image");
+      assert.equal(images.length, 1);
+      assert.equal(Buffer.from(images[0].data, "base64").toString(), "shot-0");
+    } finally {
+      session.reset();
+    }
+  });
+});
+
+test("broker: typed text is logged as a length unless log.text is on", async () => {
+  const { EventEmitter } = await import("node:events");
+  const fsm = await import("node:fs");
+  const pathm = await import("node:path");
+  const { Broker } = await import("../src/broker.mjs");
+  await withHome("nostrings-redact-", async (home) => {
+    const SECRET = "hunter2-sentinel";
+    const sent = [];
+    const child = Object.assign(new EventEmitter(), { stdin: { write: (line) => sent.push(JSON.parse(line)) }, kill() {} });
+    const lines = new EventEmitter();
+    const ok = () => ({});
+    const host = await fakeHost({ type: ok, setValue: ok, pasteStash: ok, systemKeys: ok, clipboard: ok });
+    const device = Object.assign(new EventEmitter(), { label: "Phone", info: null, request: async () => ({}), close() {} });
+    const broker = new Broker({ runner: { child, lines, isolation: { warnings: [] }, stderr: () => "" }, client: "unit", host, createDevice: () => device });
+    const done = broker.eval("1");
+    await new Promise((r) => setTimeout(r, 0));
+    const requests = [
+      ["host", "type", { pid: 1, text: SECRET }],
+      ["host", "setValue", { pid: 1, index: 3, value: SECRET }],
+      ["host", "pasteStash", { pid: 1, op: "stash", text: SECRET }],
+      ["host", "systemKeys", { text: SECRET }],
+      ["host", "clipboard", { op: "write", text: SECRET }],
+      ["device", "type", { pid: "com.example", text: SECRET }],
+      ["device", "setValue", { pid: "com.example", index: 2, value: SECRET }],
+    ];
+    let rid = 0;
+    for (const [target, method, params] of requests) lines.emit("message", { op: "call", rid: ++rid, target, method, params });
+    for (let i = 0; i < 200 && sent.filter((m) => m.op === "reply").length < requests.length; i++) await new Promise((r) => setTimeout(r, 5));
+    const evalMsg = sent.find((m) => m.op === "eval");
+    lines.emit("message", { op: "done", id: evalMsg.id, ok: true, content: [] });
+    await done;
+    broker.kill();
+    const log = fsm.readFileSync(pathm.join(home, "actions.log"), "utf8");
+    assert.equal(log.trim().split("\n").length, requests.length);
+    assert.doesNotMatch(log, /hunter2/);
+    assert.match(log, new RegExp(`"length":${SECRET.length}`));
+  });
+});
+
+test("broker: forged runner messages are refused and approval text is the host's own", async () => {
+  const { EventEmitter } = await import("node:events");
+  const { Broker } = await import("../src/broker.mjs");
+  await withHome("nostrings-broker-", async () => {
+    const sent = [];
+    const child = Object.assign(new EventEmitter(), { stdin: { write: (line) => sent.push(JSON.parse(line)) }, kill() {} });
+    const lines = new EventEmitter();
+    const host = await fakeHost({
+      approveSurface: () => ({}),
+      permissions: () => ({ accessibility: true }),
+      launch: () => ({ name: "TextEdit", bundleId: "com.apple.TextEdit", pid: 77, running: true }),
+      resolveApp: () => ({ name: "TextEdit", bundleId: "com.apple.TextEdit", pid: 0, running: false, path: "/System/Applications/TextEdit.app" }),
+    });
+    const deviceCalls = [];
+    const device = Object.assign(new EventEmitter(), {
+      label: "Phone",
+      info: null,
+      async request(m, p) {
+        deviceCalls.push([m, p]);
+        return {};
+      },
+      close() {},
+    });
+    const broker = new Broker({ runner: { child, lines, isolation: { warnings: [] }, stderr: () => "" }, client: "unit", host, createDevice: () => device });
+    assert.equal(sent[0].op, "init");
+    let rid = 0;
+    const call = async (target, method, params = {}, extra = {}) => {
+      const id = ++rid;
+      lines.emit("message", { op: "call", rid: id, target, method, params, ...extra });
+      for (let i = 0; i < 200; i++) {
+        const reply = sent.find((m) => m.op === "reply" && m.rid === id);
+        if (reply) return reply;
+        await new Promise((r) => setTimeout(r, 5));
+      }
+      throw new Error(`no reply to ${method}`);
+    };
+    // Nothing is honored between cells.
+    assert.equal((await call("host", "listApps")).error.code, "stopped");
+    const done = broker.eval("1", { title: "t" });
+    await new Promise((r) => setTimeout(r, 0));
+    const evalMsg = sent.find((m) => m.op === "eval");
+    assert.ok(evalMsg && evalMsg.config && Array.isArray(evalMsg.scripts));
+    // Unknown and reserved methods.
+    for (const [target, method] of [["host", "evil"], ["host", "hello"], ["device", "hello"], ["device", "_tapDisplay"], ["nostrings", "writeFile"], ["elsewhere", "listApps"]]) {
+      assert.equal((await call(target, method)).error?.code, "bad_request", `${target}.${method}`);
+    }
+    assert.equal(host.calls.length, 0);
+    assert.equal(deviceCalls.length, 0);
+    // Dialog text comes from the host's table, not the request.
+    await call("host", "approveSurface", { key: "macos:notifications", name: "a harmless widget", reason: "Trust me." });
+    assert.deepEqual(host.calls.at(-1), ["approveSurface", { key: "macos:notifications", name: "your notifications", reason: "Notifications can show messages and one-time codes." }]);
+    assert.equal((await call("host", "approveSurface", { key: "macos:screen", name: "x" })).error.code, "bad_request");
+    // launch approves `bundleId` and opens `path`: both come from the helper's own resolution.
+    await call("host", "launch", { bundleId: "com.apple.TextEdit", path: "/System/Applications/Utilities/Terminal.app", name: "TextEdit" });
+    assert.deepEqual(host.calls.at(-1), ["launch", { bundleId: "com.apple.TextEdit", path: "/System/Applications/TextEdit.app", name: "TextEdit", activate: false }]);
+    assert.equal((await call("host", "launch", { path: "/System/Applications/Utilities/Terminal.app" })).error.code, "bad_request");
+    // No privacy prompts from scripts.
+    await call("host", "permissions", { ask: "accessibility" });
+    assert.deepEqual(host.calls.at(-1), ["permissions", {}]);
+    // open -b only for an app approved in this session.
+    assert.equal((await call("host", "_bringForward", { pid: 77 })).error.code, process.platform === "darwin" ? "denied" : "bad_request");
+    // A bad device serial is refused before any backend exists.
+    assert.equal((await call("device", "listApps", {}, { serial: "../../x y" })).error.code, "bad_request");
+    // A stop holds for the rest of the cell.
+    lines.emit("message", { op: "stop", reason: "Stopped: the user switched away." });
+    const before = host.calls.length;
+    const refused = await call("host", "listApps");
+    assert.equal(refused.error.code, "stopped");
+    assert.match(refused.error.message, /switched away/);
+    assert.equal(host.calls.length, before);
+    assert.ok(sent.some((m) => m.op === "abort"));
+    // A done for another cell is ignored; the right one ends the cell, and
+    // content is checked (unknown images and items are dropped).
+    lines.emit("message", { op: "done", id: 999, ok: true, content: [{ type: "text", text: "forged" }] });
+    lines.emit("message", { op: "done", id: evalMsg.id, ok: true, content: [{ type: "text", text: "real" }, { type: "image", ref: "img999" }, { type: "bogus" }] });
+    assert.deepEqual(await done, { ok: true, content: [{ type: "text", text: "real" }] });
+    // The next cell starts clean; a timeout abort latches too.
+    const second = broker.eval("2");
+    await new Promise((r) => setTimeout(r, 0));
+    const evalTwo = sent.filter((m) => m.op === "eval")[1];
+    assert.ok((await call("host", "listApps")).result);
+    broker.abort("Stopped: the script ran longer than 10 ms.");
+    assert.equal((await call("host", "listApps")).error.code, "stopped");
+    lines.emit("message", { op: "done", id: evalTwo.id, ok: false, content: [] });
+    await second;
+    broker.kill();
+  });
+});

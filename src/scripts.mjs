@@ -10,14 +10,14 @@ import { paths } from "./config.mjs";
 
 const EXAMPLES = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "examples");
 
-const NAME = /^[a-z0-9][a-z0-9_-]{0,63}$/;
+export const SCRIPT_NAME = /^[a-z0-9][a-z0-9_-]{0,63}$/;
 
 export function scriptsDir() {
   return path.join(paths.home, "scripts");
 }
 
 function fileFor(name) {
-  if (typeof name !== "string" || !NAME.test(name)) {
+  if (typeof name !== "string" || !SCRIPT_NAME.test(name)) {
     throw new Error(`Script names use a-z, 0-9, - and _ (up to 64 characters), starting with a letter or digit; got ${JSON.stringify(name)}`);
   }
   return path.join(scriptsDir(), `${name}.js`);
@@ -28,7 +28,7 @@ export function listScripts() {
   if (!fs.existsSync(dir)) return [];
   return fs
     .readdirSync(dir)
-    .filter((f) => f.endsWith(".js") && NAME.test(f.slice(0, -3)))
+    .filter((f) => f.endsWith(".js") && SCRIPT_NAME.test(f.slice(0, -3)))
     .sort()
     .map((f) => {
       const first = fs.readFileSync(path.join(dir, f), "utf8").split("\n", 1)[0];
