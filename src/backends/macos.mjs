@@ -108,6 +108,13 @@ export class MacBackend extends EventEmitter {
     });
   }
 
+  // Tells the helper to drop this connection's queued and running input
+  // (Escape, a timeout, a stop). Only when connected: it never starts one.
+  cancel() {
+    if (!this.socket) return;
+    this.request("cancel").catch(() => {});
+  }
+
   close() {
     this.socket?.destroy();
     this.socket = null;

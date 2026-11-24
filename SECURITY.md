@@ -32,8 +32,19 @@ computer. Treat it with the same care as giving someone remote control.
   working in the background keeps running while you use other apps, so switching
   apps does not stop it. With the optional Input Monitoring permission, pressing
   Escape stops any script (nostrings marks its own key events, so its own Escapes
-  do not count): every request the script has not yet sent to the helper or
-  the phone is refused. A request already sent still finishes (see below).
+  do not count): every request the script has not yet sent is refused, and
+  Nostrings Helper drops the input it still has queued or is running for
+  that session, so a long drag or typed string stops partway (a held button
+  or key is still released). Stop Running Scripts, a timeout and a closed
+  session do the same.
+- **Input and captures stay in the approved app.** The helper checks this
+  itself, so it holds even for a script that escapes the scripting layer.
+  A screenshot request names a window, and it must be one of that app's own
+  windows (`not_owned` otherwise). Pointer input on the foreground route
+  (click, scroll, drag, move, hover, gestures, file drops) must land on one
+  of that app's windows, topmost at that point (`outside_app` otherwise).
+  On the background route events are posted to that app's process only.
+  Click counts, hold times, scroll lengths and gesture durations are capped.
 - **Menu-bar item.** While an agent is connected, Nostrings Helper shows a
   menu-bar item listing each session and its approved apps. Stop Running
   Scripts stops every running script. Revoke Session Approvals clears the
@@ -100,16 +111,14 @@ dialogs, and an agent that could press them would approve itself.
   Use it only when you trust every agent you attach.
 - An approved app is approved for everything in it. Allowing a browser lets
   the agent use every site you are signed in to.
-- One approved Mac app currently reaches beyond itself. Pixel clicks and
-  drags are checked against that app's own window by the scripting layer,
-  which runs in the runner, so a script that escapes `vm` can send a click or
-  drag anywhere on screen through an approved app, and can capture other
-  windows through that app's screenshot request. Moving these checks into
-  Nostrings Helper is tracked; until then, treat approving any app as
-  approving input to the whole screen while that session runs.
-- Escape and stops refuse what a script has not yet sent, but do not cancel a
-  request already in the helper (a long drag, a typed string): it finishes.
-  Cancelling inside the helper is tracked.
+- Keys on the foreground route go to whichever app is in front, as typed
+  keys do; nostrings brings the approved app forward first, and switching
+  away stops the script, but the helper does not check each key against the
+  app in front. System-wide keys (`ui.pressKey`) ask for `macos:system`.
+- Stopping cancels input, not every request: an accessibility action (a
+  press, a value set) or a read already running in the helper finishes, and
+  on a phone the request the device server is running finishes; only what is
+  queued behind it is dropped.
 - Background input uses two private macOS (SkyLight) functions, the same
   approach as yabai, cua-driver, and Peekaboo. They are looked up at runtime;
   if a macOS update removes them, nostrings falls back to bringing the app

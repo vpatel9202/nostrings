@@ -31,6 +31,41 @@ func emit(_ object: [String: Any]) {
     for connection in Connection.all() { connection.send(object) }
 }
 
+// MARK: - Cancellation
+//
+// Each connection has a cancel generation. Escape, Stop Running Scripts, a
+// "cancel" request from the client, and the connection closing bump it.
+// Requests queued before the bump are dropped (error "cancelled"), and the
+// request running stops posting input: presses, moves and scrolls are
+// dropped, while button and key releases still go out so nothing stays held.
+var currentWork: (connection: Connection, generation: Int)?
+
+func workCancelled() -> Bool {
+    guard let work = currentWork else { return false }
+    return work.connection.generation != work.generation
+}
+
+func cancelAllWork() {
+    for connection in Connection.all() { connection.cancel() }
+}
+
+func isRelease(_ e: CGEvent) -> Bool {
+    switch e.type {
+    case .leftMouseUp, .rightMouseUp, .otherMouseUp, .keyUp, .flagsChanged: return true
+    default: return false
+    }
+}
+
+// Sleeps up to `ms`, in short slices, returning early once cancelled.
+func cancellableSleep(ms: Int) {
+    var left = ms
+    while left > 0 && !workCancelled() {
+        let slice = min(left, 20)
+        usleep(useconds_t(slice) * 1000)
+        left -= slice
+    }
+}
+
 struct HelperError: Error {
     let message: String
     let code: String
@@ -596,6 +631,7 @@ let eventSource: CGEventSource? = {
 // stamped with its window; otherwise to the system at the screen point.
 func post(_ event: CGEvent?) {
     guard let e = event else { return }
+    if workCancelled() && !isRelease(e) { return }
     e.setIntegerValueField(.eventSourceUserData, value: syntheticMarker)
     if let route = backgroundRoute {
         route.postMouse(e)
@@ -610,6 +646,7 @@ var keyTargetPid: pid_t?
 
 func postKey(_ event: CGEvent?) {
     guard let e = event else { return }
+    if workCancelled() && !isRelease(e) { return }
     e.setIntegerValueField(.eventSourceUserData, value: syntheticMarker)
     if let route = backgroundRoute {
         route.postKey(e)
@@ -700,6 +737,7 @@ func flags(_ mods: [String]) -> CGEventFlags {
 func pressKeys(_ params: [String: Any]) throws -> [String: Any] {
     guard let chords = params["chords"] as? [[String: Any]] else { throw HelperError("missing chords", code: "bad_request") }
     for chord in chords {
+        if workCancelled() { break }
         guard var key = chord["key"] as? String else { continue }
         var mods = (chord["mods"] as? [String]) ?? []
         if let base = shifted[key] {
@@ -775,6 +813,7 @@ func typeText(_ params: [String: Any]) throws -> [String: Any] {
         chunk.removeAll()
     }
     for scalar in text.unicodeScalars {
+        if workCancelled() { break }
         if scalar == "\n" || scalar == "\r" || scalar == "\t" {
             flush()
             let code: CGKeyCode = scalar == "\t" ? 48 : 36
@@ -845,13 +884,15 @@ func mouseButton(_ name: String?) -> (CGMouseButton, CGEventType, CGEventType, C
 
 func click(_ params: [String: Any]) throws -> [String: Any] {
     let point = CGPoint(x: try params.requireDouble("x"), y: try params.requireDouble("y"))
-    let count = max(1, params.int("count") ?? 1)
+    let count = min(3, max(1, params.int("count") ?? 1))
+    let holdMs = min(10_000, max(28, params.int("holdMs") ?? 28))
     let (button, downType, upType, _) = mouseButton(params.string("button"))
     let f = flags((params["mods"] as? [String]) ?? [])
     post(CGEvent(mouseEventSource: eventSource, mouseType: .mouseMoved, mouseCursorPosition: point, mouseButton: .left))
     usleep(30000)
     backgroundRoute?.primeChromiumClick()
     for n in 1...count {
+        if workCancelled() { break }
         let down = CGEvent(mouseEventSource: eventSource, mouseType: downType, mouseCursorPosition: point, mouseButton: button)
         let up = CGEvent(mouseEventSource: eventSource, mouseType: upType, mouseCursorPosition: point, mouseButton: button)
         down?.setIntegerValueField(.mouseEventClickState, value: Int64(n))
@@ -861,7 +902,7 @@ func click(_ params: [String: Any]) throws -> [String: Any] {
         post(down)
         // An NSButton's mouseDown polls for the matching up; too tight a gap races it.
         // holdMs keeps the button down (press and hold).
-        usleep(useconds_t(max(28, params.int("holdMs") ?? 28)) * 1000)
+        if holdMs > 28 { cancellableSleep(ms: holdMs) } else { usleep(useconds_t(holdMs) * 1000) }
         post(up)
         usleep(count > 1 ? 80000 : 30000)
     }
@@ -879,10 +920,11 @@ func scroll(_ params: [String: Any]) throws -> [String: Any] {
     post(CGEvent(mouseEventSource: eventSource, mouseType: .mouseMoved, mouseCursorPosition: point, mouseButton: .left))
     usleep(30000)
     // Positive dy scrolls content down (toward the end), like a trackpad swipe up.
-    let dy = Int32(-(params.int("dy") ?? 0))
-    let dx = Int32(-(params.int("dx") ?? 0))
+    let dy = Int32(-max(-500, min(500, params.int("dy") ?? 0)))
+    let dx = Int32(-max(-500, min(500, params.int("dx") ?? 0)))
     let steps = max(abs(dy), abs(dx), 1)
     for i in 0..<steps {
+        if workCancelled() { break }
         let sy: Int32 = i < abs(dy) ? (dy > 0 ? 1 : -1) : 0
         let sx: Int32 = i < abs(dx) ? (dx > 0 ? 1 : -1) : 0
         let e = CGEvent(scrollWheelEvent2Source: eventSource, units: .line, wheelCount: 2, wheel1: sy, wheel2: sx, wheel3: 0)
@@ -894,6 +936,7 @@ func scroll(_ params: [String: Any]) throws -> [String: Any] {
             e?.setDoubleValueField(.scrollWheelEventFixedPtDeltaAxis2, value: Double(sx))
         }
         if let route = backgroundRoute, let event = e {
+            if workCancelled() { break }
             event.setIntegerValueField(.eventSourceUserData, value: syntheticMarker)
             route.postScroll(event)
         } else {
@@ -905,7 +948,8 @@ func scroll(_ params: [String: Any]) throws -> [String: Any] {
 }
 
 func drag(_ params: [String: Any]) throws -> [String: Any] {
-    guard let raw = params["path"] as? [[Double]], raw.count >= 2 else { throw HelperError("drag needs at least two points", code: "bad_request") }
+    guard let raw = params["path"] as? [[Double]], raw.count >= 2, raw.allSatisfy({ $0.count >= 2 }) else { throw HelperError("drag needs at least two points", code: "bad_request") }
+    if raw.count > 1000 { throw HelperError("drag takes at most 1000 points", code: "bad_request") }
     let points = raw.map { CGPoint(x: $0[0], y: $0[1]) }
     let (button, downType, upType, dragType) = mouseButton(params.string("button"))
     post(CGEvent(mouseEventSource: eventSource, mouseType: .mouseMoved, mouseCursorPosition: points[0], mouseButton: button))
@@ -922,6 +966,7 @@ func drag(_ params: [String: Any]) throws -> [String: Any] {
         let a = points[i - 1], b = points[i]
         let steps = max(4, Int(hypot(b.x - a.x, b.y - a.y) / 12))
         for s in 1...steps {
+            if workCancelled() { break }
             let t = CGFloat(s) / CGFloat(steps)
             let p = CGPoint(x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t)
             post(withClickState(CGEvent(mouseEventSource: eventSource, mouseType: dragType, mouseCursorPosition: p, mouseButton: button)))
@@ -1652,6 +1697,7 @@ func hover(_ params: [String: Any]) throws -> [String: Any] {
     let point = CGPoint(x: try params.requireDouble("x"), y: try params.requireDouble("y"))
     // A few moves, so tracking areas see the pointer enter and then rest.
     for dx in [-6.0, -3.0, 0.0] {
+        if workCancelled() { break }
         let e = CGEvent(mouseEventSource: eventSource, mouseType: .mouseMoved, mouseCursorPosition: CGPoint(x: point.x + dx, y: point.y), mouseButton: .left)
         if let route = backgroundRoute, let event = e {
             // Tracking areas in a background AppKit window see moves only on
@@ -1673,8 +1719,8 @@ func gesture(_ params: [String: Any]) throws -> [String: Any] {
     let point = CGPoint(x: try params.requireDouble("x"), y: try params.requireDouble("y"))
     let kind = params.string("kind") ?? "magnify"
     let amount = params.double("amount") ?? 1
-    let steps = max(2, params.int("steps") ?? 10)
-    let ms = params.int("ms") ?? 400
+    let steps = min(200, max(2, params.int("steps") ?? 10))
+    let ms = min(10_000, max(0, params.int("ms") ?? 400))
     let hidType: Int64
     switch kind {
     case "magnify": hidType = 8   // kIOHIDEventTypeZoom
@@ -2248,6 +2294,7 @@ func userPressedEscape() {
     // The tap and the monitor can both see one press.
     if Date().timeIntervalSince(lastEscape) < 0.2 { return }
     lastEscape = Date()
+    cancelAllWork()
     emit(["event": "escape"])
 }
 
@@ -2354,7 +2401,10 @@ final class StatusMenu: NSObject, NSMenuDelegate {
         menu.addItem(quit)
     }
 
-    @objc func stopScripts() { emit(["event": "escape"]) }
+    @objc func stopScripts() {
+        cancelAllWork()
+        emit(["event": "escape"])
+    }
 
     @objc func toggleCursor() {
         AgentCursor.shared.enabled.toggle()
@@ -2601,8 +2651,63 @@ func handle(_ connection: Connection, _ method: String, _ params: [String: Any])
     return result
 }
 
+// MARK: - Pointer scope
+//
+// Background pointer events go to the target process only. Foreground ones
+// are system-wide events at a screen point, so the point must be on one of
+// the approved app's own windows: the topmost window there (the helper's own
+// windows, such as the agent cursor, are skipped) must belong to `pid`.
+let pointerMethods: Set<String> = ["click", "scroll", "drag", "move", "hover", "gesture", "dropFiles"]
+
+func pointerPoints(_ method: String, _ params: [String: Any]) -> [CGPoint] {
+    var points: [CGPoint] = []
+    if let x = params.double("x"), let y = params.double("y") {
+        points.append(CGPoint(x: x, y: y))
+        if method == "gesture", let dx = params.double("dx"), let dy = params.double("dy") { points.append(CGPoint(x: x + dx, y: y + dy)) }
+    }
+    if method == "drag", let path = params["path"] as? [[Double]] {
+        points.append(contentsOf: path.filter { $0.count >= 2 }.map { CGPoint(x: $0[0], y: $0[1]) })
+    }
+    return points
+}
+
+func windowOwner(at point: CGPoint) -> Int? {
+    guard let info = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] else { return nil }
+    let me = Int(getpid())
+    for w in info {   // front to back
+        guard let owner = w[kCGWindowOwnerPID as String] as? Int, owner != me,
+              let b = w[kCGWindowBounds as String] as? [String: Any],
+              let rect = CGRect(dictionaryRepresentation: b as CFDictionary), rect.contains(point) else { continue }
+        if let alpha = w[kCGWindowAlpha as String] as? Double, alpha <= 0 { continue }
+        return owner
+    }
+    return nil
+}
+
+func requireInsideApp(_ method: String, _ params: [String: Any]) throws {
+    guard pointerMethods.contains(method), params.string("mode") != "background" else { return }
+    let pid = try params.requireInt("pid")
+    let points = pointerPoints(method, params)
+    if points.isEmpty { throw HelperError("\(method) needs a point", code: "bad_request") }
+    for point in points where windowOwner(at: point) != pid {
+        throw HelperError("[\(Int(point.x)), \(Int(point.y))] is not on a window of this app; foreground input stays inside the approved app.", code: "outside_app")
+    }
+}
+
+func requireOwnWindow(_ params: [String: Any]) throws {
+    let pid = try params.requireInt("pid")
+    let windowId = try params.requireInt("windowId")
+    guard let info = CGWindowListCopyWindowInfo([.optionIncludingWindow], CGWindowID(windowId)) as? [[String: Any]],
+          let owner = info.first?[kCGWindowOwnerPID as String] as? Int else {
+        throw HelperError("Window \(windowId) is gone", code: "no_window")
+    }
+    if owner != pid { throw HelperError("Window \(windowId) belongs to another app; a screenshot captures only the approved app's own windows.", code: "not_owned") }
+}
+
 func dispatch(_ connection: Connection, _ method: String, _ params: [String: Any]) throws -> Any {
     try gate(connection, method, params)
+    try requireInsideApp(method, params)
+    if method == "screenshot" { try requireOwnWindow(params) }
     switch method {
     case "hello":
         connection.client = params.string("client") ?? connection.client
@@ -2701,6 +2806,16 @@ final class Connection {
         set { approvedLock.lock(); approvedApps = newValue; approvedLock.unlock() }
     }
 
+    private let generationLock = NSLock()
+    private var generationValue = 0
+    var generation: Int {
+        generationLock.lock(); defer { generationLock.unlock() }
+        return generationValue
+    }
+    func cancel() {
+        generationLock.lock(); generationValue += 1; generationLock.unlock()
+    }
+
     init(fd: Int32) { self.fd = fd }
 
     func send(_ object: [String: Any]) {
@@ -2734,7 +2849,21 @@ final class Connection {
                       let method = obj["method"] as? String else { continue }
                 let id = obj["id"] ?? NSNull()
                 let params = (obj["params"] as? [String: Any]) ?? [:]
+                // Answered here, not on the work queue, so it overtakes the
+                // requests it cancels.
+                if method == "cancel" {
+                    self.cancel()
+                    self.send(["id": id, "result": [:]])
+                    continue
+                }
+                let generation = self.generation
                 work.async {
+                    if self.generation != generation {
+                        self.send(["id": id, "error": ["message": "Cancelled: the script was stopped.", "code": "cancelled"]])
+                        return
+                    }
+                    currentWork = (self, generation)
+                    defer { currentWork = nil }
                     do {
                         let result = try handle(self, method, params)
                         self.send(["id": id, "result": result])
@@ -2746,6 +2875,7 @@ final class Connection {
                 }
             }
         }
+        cancel()   // drop whatever this client still had queued
         close(fd)
         Connection.lock.lock()
         Connection.open[ObjectIdentifier(self)] = nil

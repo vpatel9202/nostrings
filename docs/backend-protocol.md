@@ -187,10 +187,18 @@ Replies carry `{message, code}`. Codes the macOS helper uses:
 | `bad_key` | A key name has no key code. |
 | `bad_request` | A parameter is missing or invalid, or the method is unknown. |
 | `exact_unavailable` | `insertText`: no focused element, or it does not take inserted text. |
+| `not_owned` | `screenshot`: the `windowId` belongs to another app than `pid`. |
+| `outside_app` | Foreground pointer input (`click`, `scroll`, `drag`, `move`, `hover`, `gesture`, `dropFiles`): a point is not on one of `pid`'s windows (the topmost window there belongs to another app, or there is none). |
+| `cancelled` | The request was queued when the connection's work was cancelled. |
 | `failed` | Anything else. |
 
 Clients act on `background_unavailable` and `background_unconfirmed` by
 falling back to the foreground route; every other code is an error.
+
+`cancel` (no params) is answered at once, ahead of queued requests: requests
+this connection queued before it fail with `cancelled`, and the one running
+stops posting presses, moves and scrolls (releases still go out). Escape,
+Stop Running Scripts and the connection closing cancel the same way.
 
 Node shape in `axTree`: `{i, d, role, subrole?, title?, value?, desc?, help?,
 placeholder?, id?, frame?, actions?, focused?, selected?, disabled?,

@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- Nostrings Helper keeps an approved app's requests to that app (ns-csj): a
+  screenshot must name one of its own windows (`not_owned`), and foreground
+  pointer input must land on one of its windows, topmost at that point
+  (`outside_app`). Click count (3), hold time (10 s), scroll length and
+  gesture duration are capped in the helper too.
+- Escape, Stop Running Scripts, a timeout or a closed session now stop input
+  inside the helper (ns-j23): each connection has a cancel generation, queued
+  requests fail with `cancelled`, and the running one stops posting presses,
+  moves and scrolls (releases still go out). The host sends `cancel` on every
+  stop. `smoke --macos` gained three checks (57).
+
 - Android: `activate()` right after the app was killed (force-stop, a crash)
   no longer takes its leftover window on the hidden screen for an open app
   and returns an empty screen; it starts the app again.

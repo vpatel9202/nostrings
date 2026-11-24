@@ -331,7 +331,13 @@ export class Broker {
     cell.stopped = by === "runner" && !text.startsWith("Stopped") ? `Stopped: ${text}` : text;
     this.#log({ action: "stopped", by, reason: cell.stopped });
     this.#send({ op: "abort", reason: cell.stopped });
-    // Requests already queued are refused as they come up.
+    // Requests already queued here are refused as they come up; the helper
+    // drops what it still has queued or running for this session.
+    try {
+      this.#host.cancel?.();
+    } catch {
+      // best effort
+    }
   }
 
   #onMessage(message) {

@@ -615,6 +615,67 @@ export async function runMacSmoke({ keep = false, foreground = true } = {}) {
     step("every window on screen, with owners", !wins.isError && /true/.test(wins.text), wins.text);
     const extras = await run(`(await ui.menuExtras({emit: false})).length`);
     step("menu bar extras listed", !extras.isError && Number(extras.text.trim()) > 0, extras.text);
+
+    // The helper keeps an approved app's requests to that app (ns-csj), and
+    // drops queued and running input on a stop (ns-j23). These go to the
+    // helper directly (`raw`, where the fixture is approved), not through a
+    // script.
+    const layout = JSON.parse((await run(`JSON.stringify({ windows: await ui.windows({emit: false}), displays: await ui.displays() })`)).text.trim().split("\n").at(-1));
+    const other = layout.windows.find((w) => w.pid !== fixturePid && w.bundleId !== "io.github.vpatel9202.nostrings.helper" && w.layer === 0 && w.frame[2] > 50 && w.frame[3] > 50);
+    if (other) {
+      const capture = await raw.request("screenshot", { pid: fixturePid, windowId: other.windowId, width: 100, height: 100 }).then(() => "captured", (e) => e.code);
+      step(`a capture of another app's window is refused (${other.app})`, capture === "not_owned", capture);
+    } else step("a capture of another app's window is refused", false, "no other app's window on screen to try");
+    // Points outside the fixture's windows, picked so that a broken check
+    // could do little: move and scroll over another app's window (the
+    // pointer moves, or it scrolls a line), and a click far off every
+    // display. The helper must refuse each before posting anything.
+    const inside = (p, f) => p[0] >= f[0] && p[1] >= f[1] && p[0] < f[0] + f[2] && p[1] < f[1] + f[3];
+    const fixtureWindows = layout.windows.filter((w) => w.pid === fixturePid);
+    let over = null;
+    let overApp = null;
+    for (const w of layout.windows.filter((x) => x.pid !== fixturePid && x.bundleId !== "io.github.vpatel9202.nostrings.helper" && x.layer === 0)) {
+      for (let gy = 0.1; gy < 0.95 && !over; gy += 0.1) {
+        for (let gx = 0.1; gx < 0.95 && !over; gx += 0.1) {
+          const p = [Math.round(w.frame[0] + w.frame[2] * gx), Math.round(w.frame[1] + w.frame[3] * gy)];
+          if (!fixtureWindows.some((f) => inside(p, f.frame))) [over, overApp] = [p, w.app];
+        }
+      }
+      if (over) break;
+    }
+    if (over) {
+      const moved = await raw.request("move", { pid: fixturePid, x: over[0], y: over[1] }).then(() => "moved", (e) => e.code);
+      const scrolled = await raw.request("scroll", { pid: fixturePid, x: over[0], y: over[1], dy: 1 }).then(() => "scrolled", (e) => e.code);
+      const clicked = await raw.request("click", { pid: fixturePid, x: -100000, y: -100000, button: "left", count: 1, mods: [] }).then(() => "clicked", (e) => e.code);
+      step(
+        `foreground pointer input outside the app's windows is refused (over ${overApp}, and off screen)`,
+        moved === "outside_app" && scrolled === "outside_app" && clicked === "outside_app",
+        `move: ${moved}, scroll: ${scrolled}, click: ${clicked}`,
+      );
+    } else step("foreground pointer input outside the app's windows is refused", false, "no other app's window clear of the fixture to aim at");
+    {
+      const tree = await raw.request("axTree", { pid: fixturePid });
+      const node = tree.nodes.find((n) => n.id === "canvas");
+      const [cx, cy] = [node.frame[0] + node.frame[2] / 2, node.frame[1] + node.frame[3] / 2];
+      const from = since();
+      const burst = Array.from({ length: 40 }, () =>
+        raw.request("scroll", { pid: fixturePid, x: cx, y: cy, dy: 3, mode: "background", windowId: tree.window.windowId }).then(() => "ok", (e) => e.code),
+      );
+      await new Promise((r) => setTimeout(r, 400));
+      await raw.request("cancel");
+      const outcomes = await Promise.all(burst);
+      await new Promise((r) => setTimeout(r, 500));
+      const atStop = events(from, "canvas.scroll").length;
+      await new Promise((r) => setTimeout(r, 1500));
+      const later = events(from, "canvas.scroll").length;
+      const cancelled = outcomes.filter((o) => o === "cancelled").length;
+      const after = await raw.request("ping").then(() => "ok", (e) => e.code);
+      step(
+        "a burst of 40 scrolls, then stop: the rest are dropped and nothing arrives after",
+        cancelled >= 20 && atStop > 0 && later === atStop && after === "ok",
+        `${outcomes.filter((o) => o === "ok").length} ran, ${cancelled} cancelled; scroll events ${atStop}, then ${later}; next request ${after}`,
+      );
+    }
     if (!keep) await check("quit the app", `await fx.quit()`, "quit");
     fs.rmSync(dir, { recursive: true, force: true });
   } finally {
