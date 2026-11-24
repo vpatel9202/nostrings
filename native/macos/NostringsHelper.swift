@@ -20,7 +20,7 @@ import Foundation
 import ScreenCaptureKit
 import UniformTypeIdentifiers
 
-let helperVersion = "0.5.1"
+let helperVersion = "0.6.0"
 // Marks events we synthesize so the Escape watcher ignores them.
 let syntheticMarker: Int64 = 0x676C_6F76
 
@@ -323,6 +323,25 @@ func cgWindowID(pid: Int, frame: CGRect) -> Int? {
     return nil
 }
 
+// The CGWindowID of an Accessibility window. Accessibility knows it
+// (_AXUIElementGetWindow); matching by frame alone gives two windows with the
+// same frame (an undocked DevTools window opened over its page, stacked
+// document windows) the same id, so input and screenshots hit the wrong one.
+// The id must be one of the app's normal windows; else match by frame.
+typealias AXGetWindow = @convention(c) (AXUIElement, UnsafeMutablePointer<UInt32>) -> AXError
+let axGetWindow: AXGetWindow? = dlsym(UnsafeMutableRawPointer(bitPattern: -2), "_AXUIElementGetWindow").map { unsafeBitCast($0, to: AXGetWindow.self) }
+
+func cgWindowID(pid: Int, window: AXUIElement) -> Int? {
+    if let get = axGetWindow {
+        var id: UInt32 = 0
+        if get(window, &id) == .success, id != 0,
+           cgWindows(pid: pid).contains(where: { ($0[kCGWindowNumber as String] as? Int) == Int(id) }) {
+            return Int(id)
+        }
+    }
+    return axFrame(window).flatMap { cgWindowID(pid: pid, frame: $0) }
+}
+
 func backingScale(for frame: CGRect) -> Double {
     // NSScreen frames are bottom-left origin; convert the window's center.
     guard let primary = NSScreen.screens.first else { return 2 }
@@ -355,7 +374,7 @@ func windowsInfo(_ pid: Int) -> [[String: Any]] {
             "main": main.map { CFEqual($0, w) } ?? false,
         ]
         if let role: String = axAttr(w, kAXSubroleAttribute) { info["subrole"] = role }
-        if let id = cgWindowID(pid: pid, frame: frame) { info["windowId"] = id }
+        if let id = cgWindowID(pid: pid, window: w) { info["windowId"] = id }
         out.append(info)
     }
     return out
@@ -365,7 +384,7 @@ func windowsInfo(_ pid: Int) -> [[String: Any]] {
 // does not list: on another Space, such as a full-screen window whose Space
 // is not showing.
 func otherSpaceWindows(_ pid: Int) -> [[String: Any]] {
-    let listed = Set(axWindows(pid).compactMap { w in axFrame(w).flatMap { cgWindowID(pid: pid, frame: $0) } })
+    let listed = Set(axWindows(pid).compactMap { cgWindowID(pid: pid, window: $0) })
     return cgWindows(pid: pid).compactMap { w in
         guard let id = w[kCGWindowNumber as String] as? Int, !listed.contains(id),
               (w[kCGWindowIsOnscreen as String] as? Bool) != true,
@@ -497,7 +516,7 @@ func axTree(_ params: [String: Any]) throws -> [String: Any] {
         "frame": rectJSON(frame),
         "scale": backingScale(for: frame),
     ]
-    if let id = cgWindowID(pid: pid, frame: frame) { windowInfo["windowId"] = id }
+    if let id = cgWindowID(pid: pid, window: window) { windowInfo["windowId"] = id }
     return ["window": windowInfo, "nodes": nodes, "truncated": truncated]
 }
 
@@ -537,7 +556,7 @@ func setValue(_ params: [String: Any]) throws -> [String: Any] {
     // the file keeps its old name. Only the rename editor (focused) commits.
     if attribute == kAXValueAttribute, NSRunningApplication(processIdentifier: pid_t(pid))?.bundleIdentifier == "com.apple.finder",
        (axAttr(element, kAXRoleAttribute) as String?) == kAXTextFieldRole, (axAttr(element, kAXFocusedAttribute) as Bool?) != true {
-        throw HelperError("Finder would show the new name without renaming the file. Rename instead: click the item, pressKey(\"Return\"), typeText(newName), pressKey(\"Return\").", code: "label_only")
+        throw HelperError("Finder would show the new name without renaming the file. Rename instead: click the item, pressKey(\"Return\"), pressKey(\"super+a\") to select the whole name (the field selects only the base name), typeText(newName), pressKey(\"Return\").", code: "label_only")
     }
     var value: CFTypeRef
     if let s = params["value"] as? String { value = s as CFString }
@@ -827,7 +846,7 @@ func scroll(_ params: [String: Any]) throws -> [String: Any] {
         let sx: Int32 = i < abs(dx) ? (dx > 0 ? 1 : -1) : 0
         let e = CGEvent(scrollWheelEvent2Source: eventSource, units: .line, wheelCount: 2, wheel1: sy, wheel2: sx, wheel3: 0)
         e?.location = point
-        // Some clients (Citrix Viewer) read only the point and fixed-point
+        // Some clients (remote desktop viewers) read only the point and fixed-point
         // deltas, which the line-based constructor leaves at 0 for axis 2.
         if sx != 0 {
             e?.setIntegerValueField(.scrollWheelEventPointDeltaAxis2, value: Int64(sx) * 10)
@@ -982,8 +1001,8 @@ func bundleUsesChromium(_ pid: pid_t) -> Bool {
 // The CGWindowID of the app's key window as Accessibility reports it.
 func keyWindowId(_ pid: pid_t) -> UInt32? {
     let app = AXUIElementCreateApplication(pid)
-    guard let window: AXUIElement = axAttr(app, kAXFocusedWindowAttribute), let frame = axFrame(window),
-          let id = cgWindowID(pid: Int(pid), frame: frame) else { return nil }
+    guard let window: AXUIElement = axAttr(app, kAXFocusedWindowAttribute),
+          let id = cgWindowID(pid: Int(pid), window: window) else { return nil }
     return UInt32(id)
 }
 
@@ -1095,9 +1114,10 @@ func focusIsInside(pid: pid_t, windowId: UInt32) -> Bool {
 // The window id of a sheet attached to window `parent`, if one is open.
 func sheetWindowId(pid: pid_t, parent: UInt32) -> UInt32? {
     for w in axWindows(Int(pid)) {
-        guard let frame = axFrame(w), cgWindowID(pid: Int(pid), frame: frame) == Int(parent) else { continue }
+        guard cgWindowID(pid: Int(pid), window: w) == Int(parent) else { continue }
         for child in axChildren(w) where axRole(child) == "AXSheet" {
-            if let f = axFrame(child), let id = cgWindowID(pid: Int(pid), frame: f) { return UInt32(id) }
+            // A sheet's element may report its parent's window; its own frame names it.
+            if let f = axFrame(child), let id = cgWindowID(pid: Int(pid), frame: f), id != Int(parent) { return UInt32(id) }
         }
     }
     return nil
@@ -2374,14 +2394,18 @@ func gate(_ connection: Connection, _ method: String, _ params: [String: Any]) t
 
 // MARK: - Dispatch
 
+// `ask` names the one permission to prompt for: "accessibility",
+// "screenRecording" or "inputMonitoring". macOS shows one privacy prompt at a
+// time and drops a second one fired while the first is up, so a request never
+// prompts for more than one.
 func permissions(_ params: [String: Any]) -> [String: Any] {
-    let prompt = params.bool("prompt") ?? false
-    let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: prompt] as CFDictionary
+    let ask = params.string("ask")
+    let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: ask == "accessibility"] as CFDictionary
     let ax = AXIsProcessTrustedWithOptions(options)
     var input = CGPreflightListenEventAccess()
-    if prompt && params.bool("inputMonitoring") == true && !input { input = CGRequestListenEventAccess() }
+    if ask == "inputMonitoring" && !input { input = CGRequestListenEventAccess() }
     var screen = screenCaptureAllowed()
-    if prompt && !screen { screen = CGRequestScreenCaptureAccess() }
+    if ask == "screenRecording" && !screen { screen = CGRequestScreenCaptureAccess() }
     return ["accessibility": ax, "screenRecording": screen, "escapeWatcher": escapeWatcherActive(), "inputMonitoring": input]
 }
 

@@ -84,12 +84,25 @@ dialogs, and an agent that could press them would approve itself.
   forward. They do not bypass any permission: the helper still needs
   Accessibility.
 - Scripts have no `require`, `fs`, or dynamic `import`, and see an empty
-  `process.env`. That limits a script to the `ui` API and approved apps, but an
-  approved app can still reach whatever that app can reach. Finder is not on the
-  ask-first list, and approving it lets an agent read or change any file Finder
-  can.
+  `process.env`, but that is not a sandbox. Cells run in a Node `vm` context,
+  which is not a security boundary: a script can reach the kernel's real
+  `process` (for example through a built-in's constructor) and run code as
+  you. Cells no longer get `fetch`, `Buffer`, `URL` or string `eval`, which
+  removes the easy paths, but host functions given to cells still reach the host
+  process; a separate low-privilege process is planned. Treat anything that can
+  send a cell as able to run code on your Mac, not only to use approved apps. Isolating the
+  kernel is tracked as beads issue `ns-tzn`. Separately, an approved app can
+  reach whatever that app can reach. Finder is not on the ask-first list, and
+  approving it lets an agent read or change any file Finder can.
 - nostrings does not screen app or page content for prompt injection. Text an
   agent reads in an approved app can try to steer it.
+- `ui.scripts.save` writes a file in `~/.nostrings/scripts/`, the one place a
+  session can write. A saved script never runs by itself, only when a session
+  calls `ui.scripts.run` or you run `nostrings script`, and it runs with the
+  same approvals as any other script. An agent steered by injected text could
+  still save a harmful script for later, so read a script
+  (`ui.scripts.source(name)`, or the file) before you rerun one you did not
+  write. Saves and runs are logged.
 - The optional "nostrings local signing" certificate lives in your login
   keychain and signs only the helper you build. Without it, macOS ties
   privacy grants to an ad-hoc signature and a rebuild means granting again.

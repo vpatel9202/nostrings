@@ -21,8 +21,7 @@
 #   title-length: 255
 
 # Default actor for audit trails (overridden by BEADS_ACTOR or --actor)
-# actor: ""
-
+actor: "vpatel9202"
 # Optional JSONL sidecar for explicit agent/tool interaction audit records.
 # Issue history is always recorded in the database and is visible with
 # bd history <id> --events; this only controls .beads/interactions.jsonl.
@@ -70,6 +69,9 @@
 # Secret keys (stored in this file but prefer env vars to avoid git exposure):
 # - linear.api_key  → use LINEAR_API_KEY env var instead
 # - github.token    → use GITHUB_TOKEN env var instead
-
 sync:
-    # remote: "git+https://github.com/vpatel9202/glovebox.git"
+    remote: "git+https://github.com/vpatel9202/nostrings.git"
+export:
+    auto: true
+    path: issues.jsonl
+    git-add: true

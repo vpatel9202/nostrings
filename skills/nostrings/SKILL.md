@@ -36,10 +36,36 @@ The loop:
    list until the element shows. Check steps in the same call with
    `await app.expect({label: "Saved"})`; it stops the call and shows the
    window if the check fails.
-4. Take `app.getScreenshot()` only when the tree cannot tell you what you need
-   (remote desktops such as Citrix, canvases, visual layout). Click with
-   `[x, y]` pixels from that screenshot; they are the same pixels the image
-   shows. `getAXState({frames: true})` gives element boxes in that same space.
+4. When the tree is empty or nearly so (a read shows one or two elements:
+   remote desktops, virtual machines, canvases, games), the screen is drawn, not
+   described. Use `app.ocr()`: text lines with `@x,y wxh` frames you can click
+   (`[x + w/2, y + h/2]`), and a repeat call prints only what changed. Do not
+   fall back to screenshots for reading text.
+
+Token cost, cheapest first. Pick the cheapest call that answers the question:
+
+| Need | Call | Cost |
+|---|---|---|
+| One element or value | `app.find(...)`, `app.text(i)`, `app.nodes()` | data, prints nothing |
+| What changed | `app.getAXState()` | text diff |
+| Text on a drawn screen | `app.ocr()` (`{emit: false}` for data only) | text, diffed on repeat |
+| Layout, colors, images | `app.getScreenshot()` | an image: by far the most |
+
+Collect long content in one call, not one call per page. For a list that
+scrolls on a drawn screen, loop scroll and OCR inside the script and return
+only what you need:
+
+```js
+const seen = new Set(), rows = [];
+for (let page = 0; page < 30; page++) {
+  const before = seen.size;
+  for (const t of await app.ocr({ emit: false })) if (!seen.has(t.text)) { seen.add(t.text); rows.push(t.text); }
+  if (seen.size === before) break;           // nothing new: the end of the list
+  await app.scroll([400, 300], 5);           // a point inside the list
+  await app.settle();
+}
+rows;
+```
 
 On macOS a few calls save a lot of steps: `app.menu("File > Export…")` for
 menu items, `app.select(popup, "Blue")` and `app.contextMenu(el, "Rename")`
@@ -48,6 +74,13 @@ open and save panels, and `app.paste(text)` for long text. Beyond one app:
 `ui.windows()` finds an unexpected dialog's owner, `ui.menuExtra("Control
 Center")`, `ui.notifications()`, `ui.spotlight("Name")`. `help("macOS")`
 lists them. Call `ui.quitLaunched()` when done with apps you opened.
+
+Saved scripts: at the start of a GUI task, check `ui.scripts.list()`; if a
+saved script fits, `await ui.scripts.run("name", {…args})` does it in one
+call. After a multi-step task works, offer to save it:
+`ui.scripts.save("name", code, "what it does. args: …")`, where the code uses
+`args` and `return`. The user can then rerun it with `nostrings script name
+key=value` and no model. `help("Saved scripts")` has the details.
 
 Android phones and emulators (over `adb`) use the same loop:
 `const phone = ui.device()` (or `ui.device("emulator-5554")` when several are
@@ -60,7 +93,14 @@ so the phone's own screen is untouched. If `activate()` fails with
 Keys use xdotool syntax: `Return`, `Tab`, `Escape`, `ctrl+a`, `shift+Tab`,
 `super+c` (Cmd on macOS). `typeText` treats `\n` as Return. Input stays in
 the background: the app is not brought forward and the user's cursor does
-not move. If an app ignores it, pass `{foreground: true}` to that action.
+not move. If an action fails in the background, retry it once in the
+background with `{window: <title>}` before passing `{foreground: true}`. Use
+foreground only for the step that needs it, not every action after it: the
+app stays frontmost and the user's app switch then trips "Stopped:".
+
+To rename a file in Finder: click the item, `pressKey("Return")`,
+`pressKey("super+a")` (the field selects only the base name, and `ctrl+a`
+moves to line start on macOS), `typeText(name)`, `pressKey("Return")`.
 
 `help()` prints the full API; `help("scroll")` prints one part.
 

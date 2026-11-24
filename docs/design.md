@@ -15,7 +15,7 @@ median script about 130 characters), the properties that made that loop cheap:
 4. Screenshots are an explicit choice, never a side effect of an action.
 5. Clicks land in the same pixel space as the image the model saw.
 6. Pixel actions and element actions are both cheap, because some apps
-   (Citrix, canvases) expose a single accessibility node.
+   (remote desktops, canvases) expose a single accessibility node.
 7. No documentation dump in tool results, and no idle teardown that throws
    away bindings.
 
@@ -68,6 +68,21 @@ if the script still has not stopped after five seconds, the kernel is killed
 and the result says the bindings were lost. MCP sessions live as long as the
 connection. CLI sessions live until `nostrings reset`, `nostrings stop`, or an
 idle limit (an hour by default).
+
+### Saved scripts
+
+A routine that worked is the most valuable thing a session produces, and
+models redo it from scratch each time unless it is kept. `ui.scripts.save`
+keeps it as a plain `.js` file in `~/.nostrings/scripts/`, and
+`ui.scripts.run` or `nostrings script <name>` runs it again with no model in
+the loop. The first plan loaded every saved file into each new session, which
+is shorter to call but means a script saved by a steered agent runs in every
+later session without anyone asking. So scripts never load by themselves:
+something has to call one by name, saves and runs are logged, and the user can
+read the file first. A script runs as an async function of `args`, so its
+variables stay inside it and it can `return` a value, unlike a cell, whose
+bindings persist on purpose. Plain files rather than a database, so users can
+read, edit, diff and share them.
 
 ## Reads and output
 

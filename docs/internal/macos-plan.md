@@ -38,8 +38,8 @@ Run before writing this plan, on macOS 27, helper rebuilt from `android/phase-1`
 | Google Chrome | Chromium | **no web content** (73 nodes, all browser chrome) | needs `AXManualAccessibility` / `AXEnhancedUserInterface` |
 | VS Code Insiders | Electron | **empty** (12 nodes: window buttons only) | same |
 
-Gaps from the audit, the roadmap and the open bugs (gb-1iz.14, gb-d1f,
-gb-1iz.12), in the order they are built:
+Gaps from the audit, the roadmap and the open bugs (pop-up menus taking keystrokes, ns-e8w,
+ns-a4p), in the order they are built:
 
 ## Status, 2026-11-19
 
@@ -93,7 +93,7 @@ Check: `nostrings smoke --macos` drives every area and prints PASS/FAIL per row.
   with that shortcut and presses it (menu shortcuts are not delivered to
   background apps as keys).
 - `app.select(popup, item)` opens a pop-up button and picks an item in one
-  helper call, so the user's keystrokes never reach the open menu (gb-1iz.14).
+  helper call, so the user's keystrokes never reach the open menu.
 - Context menus: `rightClick` then pick, same treatment.
 
 ### M4. Windows, apps, dialogs

@@ -3,10 +3,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import vm from "node:vm";
-import { App, pickWindow } from "../src/api.mjs";
+import { App, findWindow, pickWindow } from "../src/api.mjs";
 import { diffTrees, formatTree } from "../src/axformat.mjs";
 import { toImage, toScreen, viewFor } from "../src/geometry.mjs";
 import { parseChord, parseKeys } from "../src/keys.mjs";
+import { createCellContext } from "../src/realm.mjs";
 import { transformCell } from "../src/transform.mjs";
 
 function session() {
@@ -82,6 +83,31 @@ test("tooltips and field editors never become the default window", () => {
   assert.equal(pickWindow([settings, main], { windowId: 10, explicit: true }), main);
 });
 
+test("an existing window that takes focus does not take over the default", () => {
+  const page = { index: 1, windowId: 10, frame: [0, 0, 900, 500], main: false, focused: false, title: "Page" };
+  const devtools = { index: 0, windowId: 11, frame: [0, 0, 900, 500], main: true, focused: true, title: "Developer Tools — Page" };
+  // DevTools was already open at the last read: keep working in the page.
+  assert.equal(pickWindow([devtools, page], { windowId: 10, known: new Set([10, 11]) }), page);
+  // DevTools just opened: follow it.
+  assert.equal(pickWindow([devtools, page], { windowId: 10, known: new Set([10]) }), devtools);
+});
+
+test("a window option names an index, a title, a RegExp, or an id", () => {
+  const windows = [
+    { index: 0, windowId: 11, title: "Developer Tools — Page" },
+    { index: 1, windowId: 10, title: "Page" },
+  ];
+  assert.equal(findWindow(windows, 1), windows[1]);
+  assert.equal(findWindow(windows, "Page"), windows[1]);
+  assert.equal(findWindow(windows, "developer tools"), windows[0]);
+  assert.equal(findWindow(windows, /^Developer/), windows[0]);
+  // A RegExp from a cell's vm context.
+  assert.equal(findWindow(windows, vm.runInNewContext("/^Developer/")), windows[0]);
+  assert.equal(findWindow(windows, { id: 10 }), windows[1]);
+  assert.equal(findWindow(windows, "Nope"), undefined);
+  assert.throws(() => findWindow(windows, true), TypeError);
+});
+
 // An App over a fake backend whose tree the test can change between reads.
 function fakeApp() {
   const state = { value: "0", title: "Calc" };
@@ -133,6 +159,113 @@ test("a title change or a frames read does not reprint the tree", async () => {
   assert.match(printed[2], /@20,20 200x40/);
   await app.getAXState();
   assert.match(printed[3], /no change/);
+});
+
+// A window with 300 groups of two children each (901 elements), so the
+// outline folds the children and prints "(+2 inside)" on each group.
+function bigApp() {
+  const state = { leaf: "a" };
+  const printed = [];
+  const nodes = () => {
+    const list = [{ i: 0, d: 0, role: "AXWindow", title: "Big", frame: [0, 0, 200, 300] }];
+    let i = 1;
+    for (let g = 0; g < 300; g++) {
+      list.push({ i: i++, d: 1, role: "AXGroup", desc: g === 0 ? `group 0 ${state.leaf}` : `group ${g}`, frame: [0, 0, 100, 10] });
+      list.push({ i: i++, d: 2, role: "AXButton", desc: `b${g}`, frame: [0, 0, 10, 10] });
+      list.push({ i: i++, d: 2, role: "AXStaticText", desc: `t${g}`, value: g === 1 ? state.leaf : "x", frame: [0, 0, 10, 10] });
+    }
+    return list;
+  };
+  const ctx = {
+    config: { screenshot: { maxLongSide: 1568, maxPixels: 1_150_000 }, ax: { maxNodes: 2000, maxDepth: 40, maxTextLength: 160 } },
+    checkAbort() {},
+    out: { text: (t) => printed.push(t) },
+    backend: {
+      async request(method) {
+        if (method === "windows") return [{ index: 0, windowId: 7, frame: [0, 0, 200, 300], scale: 2, title: "Big", focused: true }];
+        if (method === "axTree") return { window: { title: "Big", windowId: 7 }, nodes: nodes() };
+        throw new Error(`unexpected ${method}`);
+      },
+    },
+  };
+  return { app: new App(ctx, { name: "Big", pid: 1 }), state, printed };
+}
+
+test("getAXState({root}) prints one subtree with its own baseline", async () => {
+  const { app, state, printed } = bigApp();
+  await app.getAXState();
+  assert.match(printed[0], /group 1" \(\+2 inside\)/);
+  // group 1 is element 4: children 5 and 6.
+  await app.getAXState({ root: 4 });
+  const sub = printed[1];
+  assert.match(sub, /under element 4/);
+  assert.match(sub, /\b4 group "group 1"/);
+  assert.match(sub, /\b5 button "b1"/);
+  assert.match(sub, /\b6 text "t1"/);
+  assert.doesNotMatch(sub, /group 0|group 2|b0"|b2"/);
+  await app.getAXState({ root: 4 });
+  assert.match(printed[2], /no change/);
+  // The leaf changes: the subtree diffs against its own baseline, and a plain
+  // read afterwards still diffs against the last full read (not the subtree).
+  state.leaf = "b";
+  await app.getAXState({ root: 4 });
+  assert.match(printed[3], /changes since last read/);
+  assert.match(printed[3], /~\t6 text "t1" value="b"/);
+  await app.getAXState();
+  assert.match(printed[4], /changes since last read/);
+  // Only the visible group 0 changed in the outline; the subtree edit was folded away.
+  assert.match(printed[4], /~\s*1 group "group 0 b"/);
+  assert.doesNotMatch(printed[4], /— under element \d|group 1"/);
+  // {full} composes: a subtree under a root prints unfolded.
+  await app.getAXState({ root: 0, full: true, disableDiffing: true });
+  assert.match(printed[5], /group 299/);
+  await assert.rejects(() => app.getAXState({ root: 99999 }), /Call getAXState\(\) again/);
+  await assert.rejects(() => app.getAXState({ root: "4" }), /Call getAXState\(\) again/);
+});
+
+// An App whose isActive readings the test scripts, to see when a call stops.
+function activeApp(readings, apps = [{ name: "Notes", bundleId: "com.apple.Notes", running: true, active: true }]) {
+  const stopped = [];
+  const logged = [];
+  const ctx = {
+    config: { ax: {} },
+    cell: 1,
+    checkAbort() {},
+    log: (e) => logged.push(e),
+    stop(reason) {
+      stopped.push(reason);
+      throw new Error(reason);
+    },
+    out: { text() {} },
+    backend: {
+      async request(method) {
+        if (method === "isActive") return { active: readings.length > 1 ? readings.shift() : readings[0] };
+        if (method === "activate") return {};
+        if (method === "listApps") return apps;
+        throw new Error(`unexpected ${method}`);
+      },
+    },
+  };
+  return { app: new App(ctx, { name: "Calc", pid: 1 }), stopped, logged };
+}
+
+test("one false isActive reading does not stop the call", async () => {
+  const { app, stopped } = activeApp([false, true]);
+  await app.activate(); // brings forward, once for this cell
+  await app.activate(); // false, then true: carries on
+  assert.deepEqual(stopped, []);
+});
+
+test("two false isActive readings stop and name the frontmost app", async () => {
+  const { app, stopped, logged } = activeApp([false]);
+  await app.activate();
+  await assert.rejects(() => app.activate(), /switched away from Calc to Notes/);
+  assert.match(stopped[0], /^Stopped: the user switched away from Calc to Notes\./);
+  assert.equal(logged.at(-1).frontmost, "Notes");
+  // A backend that cannot say what is in front still stops.
+  const unknown = activeApp([false], []);
+  await unknown.app.activate();
+  await assert.rejects(() => unknown.app.activate(), /frontmost app unknown/);
 });
 
 test("image space round-trips to screen points", () => {
@@ -307,4 +440,119 @@ test("large trees read as an outline; find still sees every element", async () =
   assert.equal(big.folded.get(2), undefined); // section 0 shows all its rows
   assert.equal(big.folded.get(2 + 11 * 21), 6); // section 11 shows 14 of 20
   assert.equal(big.folded.get(2 + 14 * 21), 20);
+});
+
+test("init connects agents once, keeps backups, and leaves unparseable configs alone", async () => {
+  const { planAgents } = await import("../src/agents.mjs");
+  const fsm = await import("node:fs");
+  const osm = await import("node:os");
+  const pathm = await import("node:path");
+  const home = fsm.mkdtempSync(pathm.join(osm.tmpdir(), "nostrings-agents-"));
+  const only = ["codex", "cursor", "gemini", "opencode"];
+  fsm.mkdirSync(pathm.join(home, ".gemini"));
+  fsm.writeFileSync(pathm.join(home, ".gemini", "settings.json"), JSON.stringify({ theme: "dark" }));
+  const first = planAgents({ home, only });
+  assert.deepEqual(first.map((a) => a.status), ["todo", "todo", "todo", "todo"]);
+  for (const a of first) a.apply();
+  assert.deepEqual(planAgents({ home, only }).map((a) => a.status), ["done", "done", "done", "done"]);
+  const gemini = JSON.parse(fsm.readFileSync(pathm.join(home, ".gemini", "settings.json"), "utf8"));
+  assert.equal(gemini.theme, "dark");
+  assert.ok(gemini.mcpServers.nostrings.args.includes("mcp"));
+  assert.ok(fsm.existsSync(pathm.join(home, ".gemini", "settings.json.before-nostrings")));
+  const opencode = JSON.parse(fsm.readFileSync(pathm.join(home, ".config", "opencode", "opencode.json"), "utf8"));
+  assert.equal(opencode.mcp.nostrings.type, "local");
+  assert.match(fsm.readFileSync(pathm.join(home, ".codex", "config.toml"), "utf8"), /^\[mcp_servers\.nostrings\]$/m);
+  fsm.writeFileSync(pathm.join(home, ".cursor", "mcp.json"), "{ // a comment\n}");
+  assert.equal(planAgents({ home, only: ["cursor"] })[0].status, "manual");
+  fsm.rmSync(home, { recursive: true, force: true });
+});
+
+test("saved scripts: names are checked, the first line describes, args parse", async () => {
+  const fsm = await import("node:fs");
+  const osm = await import("node:os");
+  const pathm = await import("node:path");
+  const home = fsm.mkdtempSync(pathm.join(osm.tmpdir(), "nostrings-scripts-"));
+  const before = process.env.NOSTRINGS_HOME;
+  process.env.NOSTRINGS_HOME = home;
+  try {
+    const s = await import("../src/scripts.mjs");
+    assert.throws(() => s.saveScript("../evil", "return 1"), /Script names/);
+    assert.throws(() => s.saveScript("ok", "  "), /code is the script/);
+    s.saveScript("sum", "// old line\nreturn args.a + args.b;", "Adds two numbers");
+    assert.deepEqual(s.listScripts(), [{ name: "sum", description: "Adds two numbers" }]);
+    assert.equal(s.readScript("sum"), "// Adds two numbers\nreturn args.a + args.b;\n");
+    const fn = vm.runInNewContext(s.wrapScript(s.readScript("sum")));
+    assert.equal(await fn({ a: 2, b: 40 }), 42);
+    assert.throws(() => s.readScript("missing"), /Saved: sum/);
+    assert.deepEqual(s.parseArgPairs(["a=2", "b=x", "c=true", "d="]), { a: 2, b: "x", c: true, d: "" });
+    assert.deepEqual(s.parseArgPairs(["code=012345", "x= "]), { code: "012345", x: " " });
+    assert.deepEqual(s.parseArgPairs(["n=-3.5", "z=02134", "e=1e3", "h=0x10", "q=NaN", "i=Infinity"]),
+      { n: -3.5, z: "02134", e: "1e3", h: "0x10", q: "NaN", i: "Infinity" });
+    assert.throws(() => s.parseArgPairs(["novalue"]), /key=value/);
+  } finally {
+    if (before === undefined) delete process.env.NOSTRINGS_HOME;
+    else process.env.NOSTRINGS_HOME = before;
+    fsm.rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("conformance: the reference fake backend passes every check", async () => {
+  const { commandBackend, runConformance } = await import("../src/conformance.mjs");
+  const pathm = await import("node:path");
+  const fake = pathm.join(pathm.dirname(new URL(import.meta.url).pathname), "fake-backend.mjs");
+  const backend = commandBackend(`"${process.execPath}" "${fake}"`);
+  try {
+    const results = await runConformance(backend, { app: "Fake", input: true });
+    assert.deepEqual(results.filter((r) => !r.ok), []);
+    assert.equal(results.length, 14);
+  } finally {
+    backend.close();
+  }
+});
+
+test("setup keeps waiting through a helper quit and restarts a helper stuck on the old answer", async () => {
+  const { waitForPermission } = await import("../src/permissions.mjs");
+  // "Quit & Reopen": one request fails, the next sees the grant.
+  let calls = 0;
+  const quitting = { close() {}, async request() { calls += 1; if (calls === 1) throw new Error("Nostrings Helper disconnected"); return { accessibility: true }; } };
+  assert.equal(await waitForPermission(quitting, (p) => p.accessibility, { pollMs: 1, restart: async () => {} }), true);
+  // "Later": the running helper says no until it is restarted.
+  let fresh = false;
+  let restarts = 0;
+  const stale = { close() {}, async request() { return { accessibility: fresh }; } };
+  const ok = await waitForPermission(stale, (p) => p.accessibility, { pollMs: 1, restartMs: 5, restart: async () => { restarts += 1; fresh = true; } });
+  assert.equal(ok, true);
+  assert.equal(restarts, 1);
+  // Never granted: gives up.
+  assert.equal(await waitForPermission(stale, () => false, { minutes: 0.0005, pollMs: 1, restartMs: 5, restart: async () => {} }), false);
+});
+
+test("repeat OCR prints only new or moved text and counts what is gone", async () => {
+  const { ocrDiff } = await import("../src/api.mjs");
+  const a = ['"Name" @10,10 40x12', '"MRN" @10,30 30x12', '"Save" @200,300 40x16'];
+  assert.match(ocrDiff("H", a, a), /— no change\.$/);
+  const b = ['"Name" @10,10 40x12', '"MRN 12345" @10,30 70x12', '"Save" @200,300 40x16'];
+  const d = ocrDiff("H", a, b);
+  assert.match(d, /\+ "MRN 12345"/);
+  assert.match(d, /2 unchanged not shown, 1 gone/);
+  assert.doesNotMatch(d, /"Name"/);
+});
+
+test("cell realm: no fetch, Buffer, URL or string eval; globalThis.constructor is not the host Function", async () => {
+  const context = createCellContext({ setTimeout, TextEncoder, console: {} });
+  const run = (code) => vm.runInContext(transformCell(code), context);
+  assert.equal(await run("typeof fetch"), "undefined");
+  assert.equal(await run("typeof Buffer"), "undefined");
+  assert.equal(await run("typeof URL"), "undefined");
+  // The global's constructor, if any, belongs to the cell realm, not the host.
+  assert.notEqual(await run("globalThis.constructor?.constructor"), Function);
+  assert.notEqual(await run("globalThis.constructor"), Object);
+  assert.equal(await run("typeof process"), "undefined");
+  assert.equal(await run("btoa('hi')"), "aGk=");
+  assert.equal(await run("atob('aGk=')"), "hi");
+  await assert.rejects(run('eval("1")'), /code generation|EvalError/i);
+  await assert.rejects(run('new Function("return 1")'), /code generation|EvalError/i);
+  await assert.rejects(run('(function () {}).constructor("return 1")'), /code generation|EvalError/i);
+  await run("const keep = 5");
+  assert.equal(await run("keep + 1"), 6);
 });

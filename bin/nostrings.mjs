@@ -7,7 +7,10 @@ import { loadConfig, paths, readUserConfig, VERSION, writeUserConfig } from "../
 const USAGE = `nostrings ${VERSION} — scriptable computer use for coding agents
 
 Usage:
-  nostrings setup [--rebuild]        Build the helper and ask macOS for permissions
+  nostrings init [--yes] [--android-only]
+                                    Set up everything: helper, permissions, agents, a test
+  nostrings setup [--rebuild] [--input-monitoring]
+                                    Build the helper and ask macOS for permissions
   nostrings signing [--create] [--trust]  Make grants survive rebuilds; --trust stops keychain prompts
   nostrings doctor                   Check that everything is ready
   nostrings mcp                      Run the stdio MCP server (tools: js, js_reset)
@@ -15,6 +18,10 @@ Usage:
         [--session name] [--title t] [--timeout ms]
                                     Reads code from stdin when no code or file is given.
                                     Screenshots are saved to files and printed as paths.
+  nostrings scripts [--examples]     List saved scripts (~/.nostrings/scripts);
+                                    --examples adds the ones in examples/
+  nostrings script <name> [k=v ...]  Run a saved script again, no model needed
+        [--session name] [--timeout ms]
   nostrings reset [--session name]   Drop a CLI session's bindings
   nostrings stop                     Stop the CLI daemon and its sessions
   nostrings smoke [--full]           Batched, persistent smoke test on Calculator
@@ -23,6 +30,8 @@ Usage:
   nostrings smoke --android [--serial s] [--keep]
                                     The same on a phone or emulator, with a test app
                                     that is installed for the run (--keep leaves it)
+  nostrings conformance [--command "cmd"] [--android [--serial s]] [--app name] [--input]
+                                    Check a backend against docs/backend-protocol.md
   nostrings allow <app>...           Always allow an app (name or bundle id)
   nostrings deny <app>...            Never allow an app
   nostrings revoke <app>...          Remove an app from both lists
@@ -95,7 +104,7 @@ async function doctor() {
             ? "ok    Background input available (apps stay in the background)"
             : `warn  Background input unavailable on this macOS; apps will be brought forward (${Object.entries(bg).filter(([, v]) => !v).map(([k]) => k).join(", ") || "old helper"})`,
         );
-        const perms = await backend.request("permissions", { prompt: false });
+        const perms = await backend.request("permissions", {});
         check(perms.accessibility, "Accessibility granted to Nostrings Helper", "System Settings > Privacy & Security > Accessibility: enable Nostrings Helper");
         check(perms.screenRecording, "Screen Recording granted to Nostrings Helper", "System Settings > Privacy & Security > Screen & System Audio Recording: enable Nostrings Helper, then run: nostrings setup --restart");
         // In testing, Escape only reached the helper with Input Monitoring.
@@ -122,14 +131,10 @@ async function doctor() {
   if (!ok) process.exitCode = 1;
 }
 
-// Polls the helper until `check(perms)` holds, or gives up after `minutes`.
 async function waitFor(backend, check, minutes = 5) {
-  const deadline = Date.now() + minutes * 60_000;
-  while (Date.now() < deadline) {
-    if (check(await backend.request("permissions", { prompt: false }))) return true;
-    await new Promise((r) => setTimeout(r, 1500));
-  }
-  return false;
+  const { waitForPermission } = await import("../src/permissions.mjs");
+  const helper = await import("../src/macos-helper.mjs");
+  return waitForPermission(backend, check, { minutes, restart: () => helper.quit() });
 }
 
 // Builds the helper if needed, then walks through the macOS permissions one
@@ -154,21 +159,22 @@ async function setup(flags) {
   }
 
   let backend = new MacBackend({ client: "nostrings setup" });
-  let perms = await backend.request("permissions", { prompt: false });
+  let perms = await backend.request("permissions", {});
   if (!perms.accessibility) {
     say('\n1/2 Accessibility: macOS is asking now. Turn on "Nostrings Helper" in');
-    say("    System Settings > Privacy & Security > Accessibility. Waiting...");
-    await backend.request("permissions", { prompt: true });
+    say("    System Settings > Privacy & Security > Accessibility. If macOS then offers");
+    say("    to quit and reopen it, either answer is fine. Waiting...");
+    await backend.request("permissions", { ask: "accessibility" });
     if (!(await waitFor(backend, (p) => p.accessibility))) die("Timed out waiting for Accessibility. Run nostrings setup again.");
     say("    Accessibility granted.");
   }
-  perms = await backend.request("permissions", { prompt: false });
+  perms = await backend.request("permissions", {});
   if (!perms.screenRecording) {
     say('\n2/2 Screen Recording: macOS is asking now. Turn on "Nostrings Helper" in');
     say("    System Settings > Privacy & Security > Screen & System Audio Recording.");
-    say("    If macOS offers to quit and reopen it, accept. If no prompt appears, use + and add");
+    say("    If macOS offers to quit and reopen it, either answer is fine. If no prompt appears, use + and add");
     say(`    ${helper.appPath()} (press Cmd+Shift+G in the file picker). Waiting...`);
-    await backend.request("permissions", { prompt: true });
+    await backend.request("permissions", { ask: "screenRecording" });
     if (!(await waitFor(backend, (p) => p.screenRecording))) die("Timed out waiting for Screen Recording. Run nostrings setup again.");
     say("    Screen Recording granted.");
     // Relaunch so the key monitor and capture start with the new grants.
@@ -176,19 +182,108 @@ async function setup(flags) {
     await helper.quit();
     backend = new MacBackend({ client: "nostrings setup" });
   }
-  perms = await backend.request("permissions", { prompt: false });
-  if (!perms.inputMonitoring) {
+  perms = await backend.request("permissions", {});
+  if (!perms.inputMonitoring && flags["input-monitoring"]) {
+    say('\nInput Monitoring: macOS is asking now. Turn on "Nostrings Helper" in');
+    say("    System Settings > Privacy & Security > Input Monitoring. Waiting...");
+    await backend.request("permissions", { ask: "inputMonitoring" });
+    if (await waitFor(backend, (p) => p.inputMonitoring, 2)) {
+      say("    Input Monitoring granted. Restarting the helper so Escape works.");
+      backend.close();
+      await helper.quit();
+      backend = new MacBackend({ client: "nostrings setup" });
+    } else say("    Not granted; Escape will not stop scripts. Switching apps still does.");
+  } else if (!perms.inputMonitoring) {
+    // Not prompted here: an unanswered prompt would sit in front of the next command.
     say("\nOptional: Input Monitoring lets you stop a running script by pressing Escape.");
     say("Without it, switching to another app (or js_reset) still stops a script.");
-    say('To enable it, turn on "Nostrings Helper" in System Settings > Privacy & Security >');
-    say(`Input Monitoring (use + and ${helper.appPath()} if it is not listed), then run`);
-    say("`nostrings setup --restart`.");
-    await backend.request("permissions", { prompt: true, inputMonitoring: true });
+    say("To turn it on: nostrings setup --input-monitoring");
   }
   backend.close();
   const ready = perms.accessibility && perms.screenRecording;
   say(ready ? "\nReady. Check with `nostrings doctor`, then try `nostrings smoke`." : "\nNot ready yet; run `nostrings doctor` to see what is missing.");
   if (!ready) process.exitCode = 1;
+}
+
+// One command from install to a working agent: helper and permissions (Mac),
+// a phone check (Android), the MCP server and skill in each agent found, and a
+// short real test. Asks before each change; --yes accepts them all.
+async function init(flags) {
+  const say = (text = "") => process.stdout.write(`${text}\n`);
+  const interactive = process.stdin.isTTY && !flags.yes;
+  const { createInterface } = await import("node:readline/promises");
+  const rl = interactive ? createInterface({ input: process.stdin, output: process.stdout }) : null;
+  const ask = async (question, yes = true) => {
+    if (flags.yes) return true;
+    if (!rl) return false;
+    const answer = (await rl.question(`${question} ${yes ? "[Y/n]" : "[y/N]"} `)).trim().toLowerCase();
+    return answer ? answer.startsWith("y") : yes;
+  };
+  if (!process.stdin.isTTY && !flags.yes) say("Not a terminal: showing what init would do. Pass --yes to do it.\n");
+
+  say(`nostrings ${VERSION} init\n`);
+  let macReady = false;
+  if (process.platform === "darwin" && !flags["android-only"]) {
+    say(flags.yes || rl ? "Mac: building the helper and asking for permissions." : "Mac: would build the helper and ask for Accessibility, then Screen Recording.");
+    const helper = await import("../src/macos-helper.mjs");
+    if (!(await helper.signingIdentity())) {
+      say("A local signing certificate keeps macOS permissions across nostrings upgrades.");
+      say(`It is self-signed, lives in your login keychain, and signs only the helper.`);
+      if (await ask("Create it?")) {
+        await helper.createSigningIdentity({ log: say });
+        // A helper built before the certificate is signed ad hoc; re-sign it now.
+        if (helper.isBuilt()) flags = { ...flags, rebuild: true };
+      }
+    }
+    if (flags.yes || rl) {
+      await setup(flags);
+      macReady = process.exitCode !== 1;
+    }
+    say();
+  }
+
+  const { doctorChecks } = await import("../src/backends/android.mjs");
+  const android = await doctorChecks();
+  const phones = android.filter((c) => c.level === "ok" && /screen \d+x\d+/.test(c.label));
+  if (phones.length) for (const c of phones) say(`Android: ${c.label}`);
+  else say("Android: no phone or emulator in `adb devices` (optional). Connect one any time; nothing else to set up.");
+  say();
+
+  const { planAgents } = await import("../src/agents.mjs");
+  const agents = planAgents();
+  if (!agents.length) say("Agents: none found. See docs/agents.md, or use `nostrings run` from any shell.");
+  for (const agent of agents) {
+    if (agent.status === "done") {
+      say(`${agent.name}: already connected.`);
+      continue;
+    }
+    say(`${agent.name}:`);
+    for (const change of agent.changes) say(`  - ${change}`);
+    if (agent.status === "manual") continue;
+    if (await ask(`Connect ${agent.name}?`)) {
+      try {
+        agent.apply();
+        say(`  Connected. Start a new ${agent.name} session to pick it up.`);
+      } catch (error) {
+        say(`  Failed: ${error.message}`);
+      }
+    }
+  }
+  say();
+
+  if (macReady && (await ask("Run a 20-second test on Calculator? It opens Calculator and types into it."))) {
+    const { runSmoke } = await import("../src/smoke.mjs");
+    await runSmoke({});
+  }
+  if (phones.length === 1 && (await ask("Run the Android test? It installs a small test app for the run.", false))) {
+    const { runAndroidSmoke } = await import("../src/smoke.mjs");
+    await runAndroidSmoke({});
+  }
+  rl?.close();
+  say("\nDone. In a new agent session, try:");
+  say('  "Use nostrings to open Calculator, work out 1234 * 5678, and tell me the result."');
+  if (phones.length) say('  "Use nostrings to open Clock on my phone and read the alarms."');
+  say("Docs: https://github.com/vpatel9202/nostrings#readme");
 }
 
 async function main() {
@@ -203,6 +298,7 @@ async function main() {
       timeout: { type: "string" },
       rebuild: { type: "boolean" },
       restart: { type: "boolean" },
+      "input-monitoring": { type: "boolean" },
       create: { type: "boolean" },
       trust: { type: "boolean" },
       macos: { type: "boolean" },
@@ -211,6 +307,12 @@ async function main() {
       android: { type: "boolean" },
       serial: { type: "string" },
       keep: { type: "boolean" },
+      yes: { type: "boolean", short: "y" },
+      examples: { type: "boolean" },
+      command: { type: "string" },
+      app: { type: "string" },
+      input: { type: "boolean" },
+      "android-only": { type: "boolean" },
       n: { type: "string", short: "n" },
       help: { type: "boolean", short: "h" },
     },
@@ -254,6 +356,36 @@ async function main() {
       );
       return;
     }
+    case "scripts": {
+      const { installExamples, listScripts, scriptsDir } = await import("../src/scripts.mjs");
+      if (flags.examples) {
+        const added = installExamples();
+        process.stdout.write(added.length ? `Added ${added.join(", ")} to ${scriptsDir()}.\n` : "The examples are already in your scripts.\n");
+      }
+      const list = listScripts();
+      if (!list.length) process.stdout.write(`No saved scripts in ${scriptsDir()}. Agents save one with ui.scripts.save(name, code, description).\n`);
+      for (const s of list) process.stdout.write(`${s.name.padEnd(24)} ${s.description}\n`);
+      return;
+    }
+    case "script": {
+      const [name, ...pairs] = positionals;
+      if (!name) die("nostrings script <name> [key=value ...]: name a saved script (see: nostrings scripts)");
+      const { parseArgPairs, readScript } = await import("../src/scripts.mjs");
+      readScript(name); // fails early, with the list of saved names
+      const args = parseArgPairs(pairs);
+      const { daemonRequest } = await import("../src/daemon.mjs");
+      printResult(
+        await daemonRequest({
+          op: "run",
+          code: `await ui.scripts.run(${JSON.stringify(name)}, ${JSON.stringify(args)})`,
+          title: `script ${name}`,
+          session: flags.session ?? `script-${name}`,
+          timeoutMs: flags.timeout ? Number(flags.timeout) : undefined,
+          client: process.env.NOSTRINGS_CLIENT,
+        }),
+      );
+      return;
+    }
     case "reset":
     case "stop": {
       const { daemonRequest } = await import("../src/daemon.mjs");
@@ -270,8 +402,34 @@ async function main() {
       process.exitCode = passed ? 0 : 1;
       return;
     }
+    case "conformance": {
+      const { commandBackend, runConformance } = await import("../src/conformance.mjs");
+      let backend;
+      if (flags.command) backend = commandBackend(flags.command);
+      else if (flags.android) {
+        const { createDeviceBackend } = await import("../src/backends/index.mjs");
+        backend = createDeviceBackend({ serial: flags.serial ?? null, client: "nostrings conformance" });
+      } else {
+        const { createBackend } = await import("../src/backends/index.mjs");
+        backend = createBackend({ client: "nostrings conformance" });
+      }
+      const app = flags.app ?? (flags.android ? "Clock" : process.platform === "darwin" && !flags.command ? "Calculator" : undefined);
+      const results = await runConformance(backend, {
+        app,
+        input: flags.input,
+        report: (r) => process.stdout.write(`${r.ok ? "PASS" : "FAIL"}  ${r.name}${r.detail ? `\n      ${r.detail}` : ""}\n`),
+      });
+      backend.close?.();
+      const failed = results.filter((r) => !r.ok).length;
+      process.stdout.write(failed ? `\n${failed} of ${results.length} checks failed.\n` : `\nAll ${results.length} checks passed.\n`);
+      process.exitCode = failed ? 1 : 0;
+      return;
+    }
     case "setup":
       await setup(flags);
+      return;
+    case "init":
+      await init(flags);
       return;
     case "signing": {
       if (process.platform !== "darwin") die("Signing applies to the macOS helper only.");

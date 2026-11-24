@@ -43,10 +43,18 @@ await calc.getAXState();
   full tree; later reads print only lines that changed (`~`), were added
   (`+`), or a list of removed indices. `disableDiffing: true` prints the full
   tree. `frames: true` appends `@x,y wxh` in image pixels. `menus: true` adds
-  the menu bar. `window` picks a window index from `app.windows()`.
-  Without `window`, reads and clicks use the focused window if it is a normal
-  one, else the window last used, else the main window; tooltips, popovers,
-  and rename fields never take over. Diffs compare against the last printed
+  the menu bar. `window` picks a window: an index from `app.windows()`, a
+  title (text it contains, any case, or a RegExp such as
+  `/^Developer Tools/`), or `{id}` (its `windowId`). Indices follow the
+  stacking order and change when focus moves between the app's windows, so
+  name a window by title when the app has several. Actions take `window`
+  too; after a read with `window`, later reads and actions stay in that
+  window until another `window` is given.
+  Without `window`, reads and actions use a normal window that just opened
+  and took focus (a dialog, settings, a new document), else the window last
+  used, else the main window; an existing window that comes forward (a
+  DevTools window, one the user clicked) does not take over, and tooltips,
+  popovers, and rename fields never do. Diffs compare against the last printed
   read of the same window; `{emit: false}` reads don't change that.
   `maxNodes` (default 800) and `maxDepth` (default 40) bound the tree; a
   truncated tree says so. A tree over 250 elements (`ax.outlineAbove` in the
@@ -55,6 +63,14 @@ await calc.getAXState();
   line that hides more ends in `(+N inside)`. A note under the read says
   what was left out. `find()` and `nodes()` still see every element;
   `getAXState({full: true})` prints all of them.
+  `getAXState({root: index})` prints only the element `index` and what is
+  under it, with the same outline limit and diffing: copy the index from a
+  folded `(+N inside)` line. Each root keeps its own diff baseline, so a
+  later plain `getAXState()` still diffs against the last full read, and a
+  repeat of the same `{root}` read says "no change". It works with `window`,
+  `full`, `frames`, `menus`, and `disableDiffing`. An index that is not in
+  the window now (stale, or in another window) throws; call `getAXState()`
+  again for current indices.
 - Line format: `<index> <role> "<label>" value="..." id=... help="..."
   (focused, selected, disabled, settable) actions: ...`. Indentation is depth.
   Indices are stable for the life of the session, so a diff means what it says.
@@ -93,7 +109,11 @@ await calc.getAXState();
   (canvases, games, remote desktops; a read with two or fewer elements
   suggests it). Returns `[{text, confidence, frame}]` with the frame in
   image pixels, ready to click, and prints one line per text unless
-  `{emit: false}`. The first call builds the OCR tool with `swiftc` (about a
+  `{emit: false}`. A repeat call on the same window prints only text that is
+  new or moved and a count of what is gone (`{disableDiffing: true}` prints
+  everything); the returned array is always complete. Use it instead of a
+  screenshot whenever the question is "what does it say": it is text, so it
+  costs far less. The first call builds the OCR tool with `swiftc` (about a
   minute); later calls take well under a second. OCR text can be wrong
   (`0` read as `O`).
 - `app.windows()` lists windows with their frames and image size.
@@ -150,8 +170,10 @@ windows).
 - `app.drag(from, to)` or `app.drag([[x, y], [x, y], ...])`.
 - `app.setValue(index, value)` sets a field's value directly. Finder file
   names refuse it (Finder would relabel without renaming); rename with a
-  click on the item, `pressKey("Return")`, `typeText(name)`,
-  `pressKey("Return")`, which works in the background.
+  click on the item, `pressKey("Return")`, `pressKey("super+a")`,
+  `typeText(name)`, `pressKey("Return")`, which works in the background.
+  The field selects only the base name, so `super+a` (Cmd+A) selects it all
+  first; `ctrl+a` moves to line start on macOS.
 - `app.focus(index)` gives an element keyboard focus.
 - `app.selectText(index, {start, length})` selects text in a field.
 - `app.listActions(index)` and `app.performSecondaryAction(index, name)`
@@ -271,6 +293,37 @@ These are not one app, so each asks first under its own key.
   be approved too, except for system hotkeys (Spotlight, Mission Control,
   screenshots, the app switcher) and while Spotlight's panel is open.
 - The Dock is an app: `ui.getApp("Dock")`.
+
+## Saved scripts
+
+A routine that worked can be saved and run again by name, from any session
+or from a shell, with no model in the loop. Scripts are files in
+`~/.nostrings/scripts/<name>.js` and never run unless something calls them.
+
+- `ui.scripts.save(name, code, description)` saves `code` (a string) under
+  `name` (a-z, 0-9, `-`, `_`). The description becomes the file's first line.
+- `ui.scripts.list()` prints and returns `[{name, description}]`.
+- `await ui.scripts.run(name, args)` runs one: its code sees `args` and the
+  same `ui`, keeps its variables to itself, and `return`s a value.
+- `ui.scripts.source(name)` returns the code, to read or change before saving
+  again.
+- From a shell: `nostrings scripts` lists them, `nostrings script <name>
+  key=value ...` runs one in its own CLI session, and `nostrings scripts
+  --examples` adds the [examples](../examples/README.md).
+
+```js
+ui.scripts.save("calc", `
+const calc = await ui.getApp("Calculator");
+await calc.pressKey("Escape");
+await calc.typeText(args.expr + "=");
+await calc.settle();
+return (await calc.find({role: "text", label: "Edit field"}))?.value;
+`, "Work out an expression in Calculator. args: expr");
+await ui.scripts.run("calc", {expr: "12*34"});   // "408"
+```
+
+Check `ui.scripts.list()` before rebuilding a routine by hand, and offer to
+save one once a multi-step task has worked.
 
 ## Approval and stopping
 
@@ -437,13 +490,19 @@ await clock.getAXState();
 - **Window controls during background typing.** A target window can show active
   window controls while it receives background keys, even though your app stays
   frontmost and keeps your keyboard.
-- **One-node trees.** Remote desktops such as Citrix expose a single accessibility
-  node, so work there runs on screenshots and pixel clicks.
+- **One-node trees.** Remote desktops, canvases and games expose a single
+  accessibility node, so work there runs on `ocr()` and pixel clicks.
 
 ## Tips
 
 - Bind each app once and reuse the handle; define helpers in the session.
 - Batch a whole step into one call: several actions, then one read.
-- Read the tree first. Use screenshots only when the tree has nothing useful
-  (remote desktops such as Citrix, canvases, games) or you need to see layout.
-- When the tree is a single node, work in pixels from the latest screenshot.
+- Pick the cheapest read that answers the question: `find`/`nodes`/`text`
+  (data, nothing printed), then `getAXState()` (a text diff), then `ocr()`
+  (text, diffed on repeat), and a screenshot last (an image costs the most).
+- When a read shows one or two elements (remote desktops, virtual machines,
+  canvases, games), the screen is drawn: read it with `app.ocr()` and click the centers
+  of its frames. Take a screenshot only to judge layout or visuals.
+- To collect a long list, loop scroll and `ocr({emit: false})` (or `find`)
+  inside one call and return only the text you need, instead of one call per
+  page.

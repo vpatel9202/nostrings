@@ -44,16 +44,20 @@ function area(w) {
   return w.frame[2] * w.frame[3];
 }
 
-// Default read and click target: the focused window if it is a normal one (a
-// new document or settings window), else the window last used, else the main
-// window, else the largest normal one. Small focused windows never win, so a
-// tooltip or field editor can't take over the reads.
+// Default read and click target: the focused window if it is a normal one
+// that just opened (a new document or settings window), else the window last
+// used, else the main window, else the largest normal one. An existing window
+// that took focus (the user clicked it, or a DevTools window came forward)
+// does not take over: indices from the last read belong to the window last
+// used. `last.known` is the window ids seen at the last read. Small focused
+// windows never win, so a tooltip or field editor can't take over the reads.
 export function pickWindow(windows, last) {
   const sticky = last?.windowId != null ? windows.find((w) => w.windowId === last.windowId) : undefined;
   if (last?.explicit && sticky) return sticky;
   const largest = [...windows].sort((a, b) => area(b) - area(a));
+  const isNew = (w) => !sticky || !last?.known || !last.known.has(w.windowId);
   return (
-    windows.find((w) => w.focused && isNormalWindow(w)) ??
+    windows.find((w) => w.focused && isNormalWindow(w) && isNew(w)) ??
     sticky ??
     windows.find((w) => w.main && isNormalWindow(w)) ??
     largest.find(isNormalWindow) ??
@@ -66,12 +70,50 @@ function hashImage(data) {
   return createHash("sha1").update(data).digest("hex");
 }
 
+// A repeat OCR of the same window prints only text that is new or has moved,
+// and how much is gone, the way reads print tree diffs. Lines are
+// `"text" @x,y wxh`, so a line that moved counts as new at its new place.
+export function ocrDiff(head, before, after) {
+  const left = new Map();
+  for (const l of before) left.set(l, (left.get(l) ?? 0) + 1);
+  const added = [];
+  for (const l of after) {
+    const n = left.get(l) ?? 0;
+    if (n) left.set(l, n - 1);
+    else added.push(l);
+  }
+  const gone = [...left.values()].reduce((a, b) => a + b, 0);
+  if (!added.length && !gone) return `${head} — no change.`;
+  const same = after.length - added.length;
+  const tail = [same && `${same} unchanged not shown`, gone && `${gone} gone`].filter(Boolean).join(", ");
+  return `${head} — changes since last OCR (+ new or moved${tail ? `; ${tail}` : ""}; {disableDiffing: true} prints all):\n${added.map((l) => `+ ${l}`).join("\n")}`;
+}
+
+// Finds the window a `window` option names: an index from app.windows()
+// (indices follow the stacking order, so they change when focus does), a
+// title (text it contains, any case, or a RegExp), or {id} (its windowId).
+const isRegExp = (v) => Object.prototype.toString.call(v) === "[object RegExp]";
+
+export function findWindow(windows, window) {
+  if (Number.isInteger(window)) return windows.find((w) => w.index === window);
+  // Cells run in their own vm context, so their RegExp is not this realm's.
+  if (isRegExp(window)) return windows.find((w) => window.test(w.title ?? ""));
+  if (typeof window === "string") {
+    const q = window.toLowerCase();
+    return windows.find((w) => (w.title ?? "") === window) ?? windows.find((w) => (w.title ?? "").toLowerCase().includes(q));
+  }
+  const id = window?.id ?? window?.windowId;
+  if (id != null) return windows.find((w) => w.windowId === id);
+  throw new TypeError("window must be an index, a title, a RegExp, or {id}");
+}
+
 export class App {
   #ctx;
   #backend;
   #view = null;
   #explicitWindow = false;
   #lastTrees = new Map(); // window id -> {lines, base, frames}: what the model last saw
+  #lastOcr = new Map(); // window id -> OCR lines the model last saw
   // What waitForChange compares against: the last printed read (or the state a
   // previous wait settled on), as {pixels, value, format, quality}.
   #waitBase = null;
@@ -186,12 +228,16 @@ export class App {
       this.#knownWindows = new Map();
       return next;
     }
+    const known = this.#knownWindows && new Set(this.#knownWindows.keys());
     this.#noteWindows(windows);
     const pick =
       window != null
-        ? windows.find((w) => w.index === window)
-        : pickWindow(windows, this.#view && { windowId: this.#view.windowId, explicit: this.#explicitWindow });
-    if (!pick) throw new Error(`${this.name} has no window ${window}`);
+        ? findWindow(windows, window)
+        : pickWindow(windows, this.#view && { windowId: this.#view.windowId, explicit: this.#explicitWindow, known });
+    if (!pick) {
+      const list = windows.map((w) => `${w.index} ${JSON.stringify(w.title)}`).join(", ");
+      throw new Error(`${this.name} has no window ${isRegExp(window) ? window : JSON.stringify(window)} (windows: ${list})`);
+    }
     if (window != null) this.#explicitWindow = true;
     else if (pick.windowId !== this.#view?.windowId) this.#explicitWindow = false;
     const next = viewFor(pick, this.#ctx.config.screenshot);
@@ -204,8 +250,8 @@ export class App {
     return next;
   }
 
-  async #ensureView() {
-    return this.#refreshView(undefined);
+  async #ensureView(window) {
+    return this.#refreshView(window);
   }
 
   // One line, shown on the next read, when windows opened or closed since the
@@ -242,12 +288,28 @@ export class App {
     // (not per list position or title) and diffs across title changes.
     // Large trees print as an outline (offscreen elements dropped, deep
     // levels folded); find() and nodes() still see everything.
-    const outline = options.full ? { nodes: tree.nodes, folded: new Map(), offscreen: 0, deeper: 0 } : outlineTree(tree.nodes, { limit: ax.outlineAbove ?? 250, bounds: [...view.origin, ...view.size] });
+    // {root: index} prints only the subtree under that element (an index copied
+    // from a folded line), re-based so the root is at depth 0. It composes with
+    // the other options and keeps its own baseline per root, so a plain read
+    // afterwards still diffs against the last full read.
+    let nodes = tree.nodes;
+    const hasRoot = options.root !== undefined && options.root !== null;
+    if (hasRoot) {
+      const at = Number.isInteger(options.root) ? nodes.findIndex((n) => n.i === options.root) : -1;
+      if (at < 0) {
+        throw new Error(`No element ${options.root} in ${this.name}'s window ${view.window}: the index is stale or not in this window. Call getAXState() again to see current indices${tree.truncated ? " (the tree was truncated; pass {maxNodes} to reach deeper elements)" : ""}.`);
+      }
+      const end = nodes.findIndex((n, k) => k > at && n.d <= nodes[at].d);
+      const rootDepth = nodes[at].d;
+      nodes = nodes.slice(at, end < 0 ? undefined : end).map((n) => ({ ...n, d: n.d - rootDepth }));
+    }
+    const outline = options.full ? { nodes, folded: new Map(), offscreen: 0, deeper: 0 } : outlineTree(nodes, { limit: ax.outlineAbove ?? 250, bounds: [...view.origin, ...view.size] });
     const fold = (list) => list.map((line, k) => (outline.folded.has(outline.nodes[k].i) ? `${line} (+${outline.folded.get(outline.nodes[k].i)} inside)` : line));
     const base = fold(formatTree(outline.nodes));
     const lines = frames ? fold(formatTree(outline.nodes, { toImage: (f) => toImage(view, f) })) : base;
-    const key = tree.window.windowId ?? view.windowId ?? `#${view.window}`;
-    const header = `${this.name} — window ${view.window} "${tree.window.title}" — image ${view.width}x${view.height}${view.note ?? ""}`;
+    const windowKey = tree.window.windowId ?? view.windowId ?? `#${view.window}`;
+    const key = hasRoot ? `${windowKey}/root ${options.root}` : windowKey;
+    const header = `${this.name} — window ${view.window} "${tree.window.title}"${hasRoot ? ` — under element ${options.root}` : ""} — image ${view.width}x${view.height}${view.note ?? ""}`;
     const last = disableDiffing ? undefined : this.#lastTrees.get(key);
     let text;
     // A first {frames: true} read prints in full: the frames are what was asked for.
@@ -262,18 +324,20 @@ export class App {
       text += this.#notice;
       this.#notice = "";
     }
-    // Once, on a full read: a diff of a near-empty tree needs no reminder.
+    // A near-empty tree means the screen is drawn (remote desktops, canvases): steer to
+    // OCR, which is text, not to screenshots, which are images.
     if (tree.nodes.length <= 2 && !text.includes(" — changes since last read") && !text.endsWith(" — no change.")) {
-      text += "\n(few elements: this screen may be drawn, not described; app.ocr() reads its text with positions, or take a screenshot)";
+      text += "\n(only " + tree.nodes.length + " element" + (tree.nodes.length === 1 ? "" : "s") + ": this screen is drawn, not described. Use app.ocr() for its text with clickable positions; it costs far less than a screenshot, and repeat calls show only changes. Screenshot only to judge layout.)";
     }
     if (outline.offscreen || outline.deeper) {
       const left = [outline.offscreen && `${outline.offscreen} outside the window`, outline.deeper && `${outline.deeper} in folded levels`].filter(Boolean).join(", ");
-      text += `\n(outline: ${outline.nodes.length} of ${tree.nodes.length} elements; not shown: ${left}. find() and nodes() reach all of them; {full: true} prints everything)`;
+      text += `\n(outline: ${outline.nodes.length} of ${tree.nodes.length} elements; not shown: ${left}. find() and nodes() reach all of them; {full: true} prints everything; {root: N} prints only what is under element N, e.g. one that ends in "(+K inside)")`;
     }
     // The baseline is what the model last saw, so silent reads leave it alone.
     if (emit) {
       this.#lastTrees.set(key, { lines, base, frames });
-      this.#waitBase = { pixels: false, value: base.join("\n") };
+      // A subtree read is not what waitForChange compares the window against.
+      if (!hasRoot) this.#waitBase = { pixels: false, value: base.join("\n") };
       this.#ctx.out.text(text);
     }
     return text;
@@ -477,7 +541,11 @@ export class App {
     const items = found.map((t) => ({ text: t.text, confidence: Math.round(t.confidence * 100) / 100, frame: [t.frame[0] * sx, t.frame[1] * sy, t.frame[2] * sx, t.frame[3] * sy].map(Math.round) }));
     if (options.emit !== false) {
       const lines = items.map((t) => `${JSON.stringify(t.text)} @${t.frame[0]},${t.frame[1]} ${t.frame[2]}x${t.frame[3]}`);
-      this.#ctx.out.text(`${this.name} — text in the screenshot (OCR) — image ${this.#view.width}x${this.#view.height}\n${lines.join("\n") || "(no text found)"}`);
+      const head = `${this.name} — text in the screenshot (OCR) — image ${this.#view.width}x${this.#view.height}`;
+      const key = this.#view.windowId ?? `#${this.#view.window}`;
+      const last = options.disableDiffing ? undefined : this.#lastOcr.get(key);
+      this.#ctx.out.text(last ? ocrDiff(head, last, lines) : `${head}\n${lines.join("\n") || "(no text found)"}`);
+      this.#lastOcr.set(key, lines);
     }
     return items;
   }
@@ -525,10 +593,27 @@ export class App {
   async #activate() {
     if (this.#activatedCell === this.#ctx.cell) {
       if ((await this.#call("isActive")).active) return;
-      this.#ctx.stop(`Stopped: the user switched away from ${this.name}. Do not continue GUI actions until the user asks.`);
+      // One false reading can be a transient (a Space switch, a menu or
+      // Spotlight flickering focus): look again before ending the call.
+      await new Promise((r) => setTimeout(r, 150));
+      if ((await this.#call("isActive")).active) return;
+      const front = await this.#frontmostName();
+      this.#ctx.log?.({ app: this.bundleId ?? this.name, action: "stopped", reason: "user switched away", frontmost: front ?? "unknown" });
+      this.#ctx.stop(`Stopped: the user switched away from ${this.name}${front ? ` to ${front}` : " (frontmost app unknown)"}. Do not continue GUI actions until the user asks.`);
     }
     await this.#bringForward();
     this.#activatedCell = this.#ctx.cell;
+  }
+
+  // Name of the app in front, from the ungated listApps (macOS reports
+  // `active` per app). Best effort: undefined when the backend does not say.
+  async #frontmostName() {
+    try {
+      const front = (await this.#backend.request("listApps")).find((a) => a.running !== false && a.active);
+      return front?.name || front?.bundleId || undefined;
+    } catch {
+      return undefined;
+    }
   }
 
   // macOS may refuse an activation requested by a background app, and a
@@ -549,9 +634,9 @@ export class App {
     throw new Error(`Could not bring ${this.name} to the front`);
   }
 
-  async #screenPoint(target) {
+  async #screenPoint(target, window) {
     if (isPoint(target)) {
-      const view = await this.#ensureView();
+      const view = await this.#ensureView(window);
       const [x, y] = target;
       // A point outside the window would land in whatever app is underneath.
       if (x < 0 || y < 0 || x >= view.width || y >= view.height) {
@@ -571,7 +656,7 @@ export class App {
     const modList = [].concat(modifiers);
     const mods = modList.length ? parseKeys(`${modList.join("+")}+a`)[0].mods : [];
     return this.#act("click", { target: describeTarget(target), button, count }, async () => {
-      const [x, y] = await this.#screenPoint(target);
+      const [x, y] = await this.#screenPoint(target, options.window);
       const hit = await this.#call("hitTest", { x, y }).catch(() => null);
       const onMenu = hit?.role === "AXMenuItem";
       // A plain click on a pressable element: press it through accessibility,
@@ -636,7 +721,7 @@ export class App {
   // app is brought forward instead and `lastRoute` says so.
   async #deliver(method, params, options = {}) {
     if (this.#useBackground(options)) {
-      const view = await this.#ensureView();
+      const view = await this.#ensureView(options.window);
       if (view.windowId != null) {
         try {
           const result = await this.#call(method, { ...params, mode: "background", windowId: view.windowId });
@@ -708,7 +793,7 @@ export class App {
   async scroll(target, amount = 3, options = {}) {
     const { dy, dx } = typeof amount === "number" ? { dy: amount, dx: options.dx ?? 0 } : { dy: 0, dx: 0, ...amount };
     return this.#act("scroll", { target: describeTarget(target), dy, dx }, async () => {
-      const [x, y] = await this.#screenPoint(target);
+      const [x, y] = await this.#screenPoint(target, options.window);
       await this.#pointCursor([x, y]);
       await this.#deliver("scroll", { x, y, dy, dx }, options);
     });

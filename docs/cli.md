@@ -12,11 +12,14 @@ A failing command exits with status 1.
 
 | Command | What it does |
 |---|---|
-| `nostrings setup [--rebuild] [--restart]` | Builds Nostrings Helper if it is missing or its source changed, then walks through Accessibility and Screen Recording, one at a time, and offers Input Monitoring. Exits 1 if the first two are not granted. macOS only. |
+| `nostrings init [--yes] [--android-only]` | Everything in one go. On a Mac: offers the signing certificate, then runs `setup`. Lists Android devices. Finds installed agents (Claude Code, Codex CLI, Grok CLI, Cursor, Gemini CLI, OpenCode), shows the exact change for each (MCP server entry, plus the skill for Claude Code and Grok), and asks before making it. Already-connected agents are skipped, edited files get a `.before-nostrings` backup once, and a config that is not plain JSON is left alone with instructions. Offers the Calculator test, and the Android test when one device is connected. `--yes` accepts everything; without a terminal and without `--yes` it only prints the plan. |
+| `nostrings setup [--rebuild] [--restart] [--input-monitoring]` | Builds Nostrings Helper if it is missing or its source changed, then asks for Accessibility, waits until it is on, then asks for Screen Recording. macOS shows one privacy prompt at a time, so each waits for the last. `--input-monitoring` also asks for Input Monitoring (Escape stops a script); without it setup only mentions it. Exits 1 if the first two are not granted. macOS only. |
 | `nostrings signing [--create] [--trust]` | Reports whether the local signing certificate exists. With `--create`, makes it in the login keychain. Run `setup --rebuild` afterwards to re-sign. With `--trust`, asks for the login keychain password once (or reads `NOSTRINGS_KEYCHAIN_PASSWORD`) so codesign stops asking on every rebuild; nostrings does not keep the password. macOS only. |
 | `nostrings doctor` | Checks Node (20.10+), the config, the helper build, that the helper answers, background input, Accessibility, Screen Recording, and Input Monitoring. Exits 1 on any `FAIL`. |
 | `nostrings mcp` | Runs the stdio MCP server (tools `js`, `js_reset`). |
 | `nostrings run [code] [-f file] [-s name] [-t title] [--timeout ms]` | Runs a script in a persistent CLI session and prints the result. |
+| `nostrings scripts [--examples]` | Lists saved scripts in `~/.nostrings/scripts` with their descriptions. `--examples` first copies the scripts in `examples/` there, leaving any of yours with the same name alone. |
+| `nostrings script <name> [key=value ...] [--session name] [--timeout ms]` | Runs a saved script in its own CLI session (`script-<name>` unless `--session` names one) with the pairs as `args`; `true`/`false` and plain numbers are converted (`42`, `-3.5`); anything else stays a string, so `012345`, `1e3` and a blank keep their exact text. Prints what the script prints and returns. |
 | `nostrings reset [-s name]` | Drops a CLI session's bindings. |
 | `nostrings stop` | Stops the CLI daemon and every session in it. |
 | `nostrings smoke [--full]` | End-to-end test on Calculator. See `testing.md`. |
