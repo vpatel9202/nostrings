@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.7.0 (2026-11-24)
 
 - Nostrings Helper keeps an approved app's requests to that app (ns-csj): a
   screenshot must name one of its own windows (`not_owned`), and foreground
