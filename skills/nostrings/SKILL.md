@@ -91,7 +91,9 @@ so the phone's own screen is untouched. If `activate()` fails with
 `{foreground: true}` to `getApp`. `help("Android")` lists the rest.
 
 Keys use xdotool syntax: `Return`, `Tab`, `Escape`, `ctrl+a`, `shift+Tab`,
-`super+c` (Cmd on macOS). `typeText` treats `\n` as Return. Input stays in
+`super+c` (Cmd on macOS). `typeText` treats `\n` as Return. On macOS the
+app's autocorrect applies to typed text; when the exact text matters (names,
+code, IDs), click the field, then `typeText(text, {exact: true})`. Input stays in
 the background: the app is not brought forward and the user's cursor does
 not move. If an action fails in the background, retry it once in the
 background with `{window: <title>}` before passing `{foreground: true}`. Use

@@ -153,7 +153,9 @@ async function setup(flags) {
     say("The helper was rebuilt ad hoc, so macOS treats it as a new app. If old grants still show as");
     say("on but this step never finishes, clear them in another terminal and run setup again:");
     say(`  tccutil reset Accessibility ${helper.BUNDLE_ID}`);
-    say(`  tccutil reset ScreenCapture ${helper.BUNDLE_ID}`);
+    // Screen Recording grants live in the system TCC database: without sudo,
+    // tccutil reports success and leaves the grant in place.
+    say(`  sudo tccutil reset ScreenCapture ${helper.BUNDLE_ID}`);
     say(`  tccutil reset ListenEvent ${helper.BUNDLE_ID}`);
     say("To stop this happening on every rebuild: nostrings signing --create");
   }
