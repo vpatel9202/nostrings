@@ -56,7 +56,8 @@ export async function runSmoke({ screenshot = true, full = false } = {}) {
   const results = [];
   const step = (name, pass, detail) => {
     results.push(pass);
-    process.stdout.write(`${pass ? "PASS" : "FAIL"}  ${name}${detail ? `\n      ${detail.split("\n").join("\n      ")}` : ""}\n`);
+    const text = detail == null ? "" : String(detail).trim();
+    process.stdout.write(`${pass ? "PASS" : "FAIL"}  ${name}${text ? `\n      ${text.split("\n").join("\n      ")}` : ""}\n`);
   };
   try {
     const init = await mcp.request("initialize", {
@@ -106,7 +107,8 @@ await calc.getAXState();`);
 
     await mcp.request("tools/call", { name: "js_reset", arguments: {} });
     const after = await mcp.js("typeof calc");
-    step("js_reset drops the binding", !after.isError && after.text.trim() === "undefined", after.text);
+    const resetOk = !after.isError && after.text.trim() === "undefined";
+    step("js_reset drops the binding", resetOk, resetOk ? undefined : after.text);
 
     if (full) {
       // Raw mouse input in a background text editor: a click places the caret,
@@ -182,7 +184,8 @@ export async function runAndroidSmoke({ serial, keep = false } = {}) {
   const results = [];
   const step = (name, pass, detail) => {
     results.push(pass);
-    process.stdout.write(`${pass ? "PASS" : "FAIL"}  ${name}${!pass && detail ? `\n      ${String(detail).split("\n")[0]}` : ""}\n`);
+    const text = detail == null ? "" : String(detail).trim().split("\n")[0];
+    process.stdout.write(`${pass ? "PASS" : "FAIL"}  ${name}${!pass && text ? `\n      ${text}` : ""}\n`);
   };
   if (!fs.existsSync(FIXTURE_APK)) {
     step("fixture app built", false, "Run: npm run build:android");
@@ -389,6 +392,25 @@ const counts = (await fp.getAXState({ emit: false, disableDiffing: true })).matc
 await fp.pressKey("Back");
 JSON.stringify({ screen: fp.screen, route, counts });`);
     step("{foreground: true} works on the phone's own screen", phoneRoute.screen === "phone" && /^taps: 1/.test(phoneRoute.counts ?? "") && /^foreground/.test(phoneRoute.route ?? ""), phoneRoute.error ?? `${phoneRoute.screen} ${phoneRoute.route} ${phoneRoute.counts}`);
+
+    // An app that opens a second screen on the phone's own display while its
+    // main one stays on the hidden screen: reads stop with moved_to_phone_screen.
+    if (hello.screen === "hidden") {
+      await adb(["-s", transport, "shell", "am", "force-stop", FIXTURE_PACKAGE]);
+      const moved = await run(`
+const mp = await ui.device(${JSON.stringify(transport)}).getApp(${JSON.stringify(FIXTURE_PACKAGE)}, { foreground: false });
+await mp.activate();
+await mp.click((await mp.find({ role: "button", label: "Open on phone screen" })).index);
+let code = null, message = null;
+for (let i = 0; i < 16 && !code; i++) {
+  await sleep(250);
+  try { await mp.getAXState({ emit: false }); } catch (e) { code = e.code; message = String(e.message).split("\\n")[0]; }
+}
+JSON.stringify({ code, message, screen: mp.screen });`);
+      step("an app opening itself on the phone's screen raises moved_to_phone_screen", moved.code === "moved_to_phone_screen", moved.error ?? `code ${moved.code} on ${moved.screen} screen: ${moved.message}`);
+      // Put the phone's screen back as it was.
+      await adb(["-s", transport, "shell", "am", "force-stop", FIXTURE_PACKAGE]).catch(() => {});
+    }
   } finally {
     mcp.close();
     if (!keep) {
@@ -414,7 +436,8 @@ export async function runMacSmoke({ keep = false, foreground = true } = {}) {
   const results = [];
   const step = (name, pass, detail) => {
     results.push(pass);
-    process.stdout.write(`${pass ? "PASS" : "FAIL"}  ${name}${detail && !pass ? `\n      ${String(detail).split("\n").slice(0, 6).join("\n      ")}` : ""}\n`);
+    const text = detail == null ? "" : String(detail).trim();
+    process.stdout.write(`${pass ? "PASS" : "FAIL"}  ${name}${!pass && text ? `\n      ${text.split("\n").slice(0, 6).join("\n      ")}` : ""}\n`);
   };
   process.stdout.write("Building Nostrings Fixture if needed...\n");
   await fixture.buildFixture();
