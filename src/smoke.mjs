@@ -393,6 +393,33 @@ await fp.pressKey("Back");
 JSON.stringify({ screen: fp.screen, route, counts });`);
     step("{foreground: true} works on the phone's own screen", phoneRoute.screen === "phone" && /^taps: 1/.test(phoneRoute.counts ?? "") && /^foreground/.test(phoneRoute.route ?? ""), phoneRoute.error ?? `${phoneRoute.screen} ${phoneRoute.route} ${phoneRoute.counts}`);
 
+    // The phone's screen is a choice per getApp, not a mark on the app. With
+    // the app still open on the phone, getApp without the option goes back to
+    // the hidden screen (the copy nostrings opened on the phone is stopped
+    // first), and so does a new session after js_reset.
+    if (hello.screen === "hidden") {
+      const hiddenAgain = `
+const bp = await ui.device(${JSON.stringify(transport)}).getApp(${JSON.stringify(FIXTURE_PACKAGE)});
+await bp.activate();
+const t = await bp.getAXState({ emit: false, disableDiffing: true });
+await bp.click(Number(t.match(/^\\s*(\\d+) button "Tap me"/im)[1]), { raw: true });
+JSON.stringify({ screen: bp.screen, route: bp.lastRoute });`;
+      const open = `
+const fg = await ui.device(${JSON.stringify(transport)}).getApp(${JSON.stringify(FIXTURE_PACKAGE)}, { foreground: true });
+await fg.activate();
+"open";`;
+      await adb(["-s", transport, "shell", "am", "force-stop", FIXTURE_PACKAGE]);
+      await run(open);
+      const same = await run(hiddenAgain);
+      step("getApp without {foreground} returns an open phone-screen app to the hidden screen", same.screen === "hidden" && /^hidden screen/.test(same.route ?? ""), same.error ?? `${same.screen} ${same.route}`);
+      await adb(["-s", transport, "shell", "am", "force-stop", FIXTURE_PACKAGE]);
+      await run(open);
+      await mcp.request("tools/call", { name: "js_reset", arguments: {} });
+      const reset = await run(hiddenAgain);
+      step("after js_reset, getApp without {foreground} uses the hidden screen", reset.screen === "hidden" && /^hidden screen/.test(reset.route ?? ""), reset.error ?? `${reset.screen} ${reset.route}`);
+      await adb(["-s", transport, "shell", "am", "force-stop", FIXTURE_PACKAGE]);
+    }
+
     // An app that opens a second screen on the phone's own display while its
     // main one stays on the hidden screen: reads stop with moved_to_phone_screen.
     if (hello.screen === "hidden") {

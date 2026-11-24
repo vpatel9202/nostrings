@@ -144,7 +144,10 @@ the fixture's approval skipped (ask-first apps and a locked phone still ask):
 11. `js_reset` drops the binding.
 12. `getApp(..., {foreground: true})` taps the fixture on the phone's own
     screen (it shows there for a moment, then `Back`).
-13. On the hidden screen: the fixture's "Open on phone screen" button opens a
+13. With the fixture open on the phone's screen, `getApp(name)` without the
+    option returns to the hidden screen, and so does a new `getApp` after
+    `js_reset` (the copy nostrings opened on the phone is stopped).
+14. On the hidden screen: the fixture's "Open on phone screen" button opens a
     second activity on display 0, and the next read raises
     `moved_to_phone_screen`.
 
@@ -244,9 +247,9 @@ hardened (no `fetch`, `Buffer`, `URL` or `eval` in cells):
   (`checkMoved`). `app.activate()` on the same app accepts what is on the
   phone's screen and clears the error (written, not run). With the check
   added, `smoke --android` passes all 21 checks.
-- Two things the new check had to work around: a handle opened earlier with
-  `{foreground: true}` stays on the phone's screen for the session, so the step
-  asks for `{foreground: false}`; and it force-stops the fixture before and after.
+- The new check force-stops the fixture before and after. (It once also had to
+  pass `{foreground: false}`, because a `{foreground: true}` handle stayed on the
+  phone's screen; ns-2fw fixed that.)
 - `nostrings script notifications-digest serial=emulator-5554` printed three
   phone notifications (Digital Wellbeing, and two from Android System) and
   `{ mac: 0, phone: 3 }`. `nostrings script phone-open serial=emulator-5554
