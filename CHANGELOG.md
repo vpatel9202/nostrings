@@ -1,7 +1,24 @@
 # Changelog
 
-## 0.6.0 (2026-11-19)
+## 0.6.0 (2026-11-24)
 
+- `getAXState({root: index})` prints only the subtree under one element, for
+  example one whose outline line ends in `(+N inside)`. It keeps its own diff
+  baseline, and a stale index throws.
+- `nostrings script` arguments: only plain numbers and `true`/`false` are
+  converted, so `012345`, `1e3` and blanks keep their exact text.
+- The "user switched away" stop reads `isActive` again after 150 ms before
+  stopping, and names the app that is in front in the message and the log.
+- Finder rename hint (helper message, docs, skill) adds `pressKey("super+a")`
+  after Return: the field selects only the base name.
+- Skill and `js` tool text: retry a failed action in the background with
+  `{window}` before `{foreground: true}`, and only for the step that needs it.
+- `examples/notifications-digest.js` lists the Mac's notifications when no
+  phone is connected.
+- Android: `moved_to_phone_screen` also fires when an app opens a second
+  activity on the phone's screen while its main one stays hidden.
+- Bench: focus steals and cursor movement watched host-side, p90, Wilson
+  intervals, model and effort columns, and two Android fixture tasks.
 - `ui.log(obj)`: a script can append one JSON line, tagged `source: "script"`,
   to the action log (8 KB cap; strings follow `log.text`).
 - Cells no longer get `fetch`, `Buffer`, `URL` or string `eval`/`new Function`,
