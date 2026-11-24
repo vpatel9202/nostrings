@@ -1,0 +1,59 @@
+name: discovery
+# Daily discovery loop. Claude reads the repo and the web and files at most
+# three GitHub issues labeled `triage`. It cannot change code, for two separate
+# reasons: the job token below can't write contents, and Claude has no Edit,
+# Write, or push tool.
+#
+# You relabel the good issues `approved`. The next time Claude Code starts on
+# your Mac, scripts/import-approved.mjs pulls them into beads (SessionStart hook).
+on:
+  schedule:
+    - cron: "17 22 * * *" # daily, 22:17 UTC (4:17 pm Central standard time)
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: discovery
+  cancel-in-progress: false
+
+jobs:
+  discover:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 50 # recent history, so scout A can see what changed lately
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - run: npm ci
+
+      - name: Make sure the labels exist
+        run: |
+          gh label create discovery --color 5319e7 --description "Filed by the discovery loop" --force
+          gh label create triage    --color fbca04 --description "Waiting for review: approve or close" --force
+          gh label create approved  --color 0e8a16 --description "Imports into beads on the next local Claude Code session" --force
+          gh label create in-beads  --color c5def5 --description "Imported into beads" --force
+          gh label create "priority::high"   --color b60205 --force
+          gh label create "priority::medium" --color d93f0b --force
+          gh label create "priority::low"    --color fef2c0 --force
+
+      - uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          # Use this job's token (contents: read) instead of the Claude GitHub
+          # App's token, which can write to the repo.
+          github_token: ${{ github.token }}
+          prompt: "Read .github/discovery-prompt.md and follow it exactly."
+          claude_args: >-
+            --model opus
+            --max-turns 60
+            --allowedTools "Read,Glob,Grep,WebSearch,WebFetch,Agent,Bash(npm test),Bash(git log:*),Bash(git diff:*),Bash(gh issue list:*),Bash(gh issue view:*),Bash(gh issue create:*)"
