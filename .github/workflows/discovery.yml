@@ -1,6 +1,6 @@
 name: discovery
-# Daily discovery loop. Claude reads the repo and the web and files at most
-# three GitHub issues labeled `triage`. It cannot change code, for two separate
+# Discovery loop, every other day. Claude reads the repo and the web and files at most
+# five GitHub issues labeled `triage`. It cannot change code, for two separate
 # reasons: the job token below can't write contents, and Claude has no Edit,
 # Write, or push tool.
 #
@@ -8,7 +8,7 @@ name: discovery
 # your Mac, scripts/import-approved.mjs pulls them into beads (SessionStart hook).
 on:
   schedule:
-    - cron: "17 22 * * *" # daily, 22:17 UTC (4:17 pm Central standard time)
+    - cron: "17 22 */2 * *" # odd days of the month, 22:17 UTC (4:17 pm CST)
   workflow_dispatch:
 
 permissions:
@@ -22,7 +22,7 @@ concurrency:
 jobs:
   discover:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     env:
       GH_TOKEN: ${{ github.token }}
     steps:
@@ -53,7 +53,11 @@ jobs:
           # App's token, which can write to the repo.
           github_token: ${{ github.token }}
           prompt: "Read .github/discovery-prompt.md and follow it exactly."
+          # Print the full transcript in the job log (public on this repo) so a
+          # run that files nothing can be diagnosed.
+          show_full_output: true
           claude_args: >-
             --model opus
-            --max-turns 60
-            --allowedTools "Read,Glob,Grep,WebSearch,WebFetch,Agent,Bash(npm test),Bash(git log:*),Bash(git diff:*),Bash(gh issue list:*),Bash(gh issue view:*),Bash(gh issue create:*)"
+            --max-turns 150
+            --allowedTools "Read,Glob,Grep,WebSearch,WebFetch,Bash(npm test),Bash(git log:*),Bash(git diff:*),Bash(gh issue list:*),Bash(gh issue view:*),Bash(gh issue create:*)"
+            --disallowedTools "Agent,Task,ScheduleWakeup,CronCreate,Monitor"
