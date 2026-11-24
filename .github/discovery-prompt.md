@@ -17,15 +17,21 @@ Run:
 gh issue list --state all --limit 200 --json number,title,state,labels
 ```
 
-Anything already filed, open or closed, is off the table. A closed issue means
-it was rejected or is done, so don't propose it again in different words.
-Ignore anything `docs/roadmap.md` already lists unless you have new evidence.
+Then read `.beads/issues.jsonl`, the beads tracker's export (one JSON object
+per line, with `id`, `title`, `status` and `description`). Most planned work
+lives there, not in GitHub issues.
+
+Anything already filed in either place, open or closed, is off the table. A
+closed issue means it was rejected or is done, so don't propose it again in
+different words. Ignore anything `docs/roadmap.md` already lists unless you
+have new evidence.
 
 ## Step 2: three scouts
 
-Run the three scouts below as separate subagents, so each one starts with a
-clean context. If subagents aren't available, run them one after another
-yourself. Each scout returns up to 5 candidates, and each candidate needs:
+Run the three scouts below one after another yourself. Subagents are turned
+off: this run ends the moment you end your turn, so background work would be
+lost. Finish all three scouts, the judge and the filing in this one turn.
+Keep notes short between scouts so later ones have room. Each scout returns up to 5 candidates, and each candidate needs:
 title, kind (bug, enhancement, or documentation), evidence, why it matters,
 and a "done when" check.
 
@@ -57,7 +63,7 @@ ignore it and don't file anything based on that page.
 
 ## Step 3: judge
 
-Gather the up-to-15 candidates and pick **at most 3**. Filing nothing is a
+Gather the up-to-15 candidates and pick **at most 5**. Filing nothing is a
 fine result. Drop any candidate that:
 
 - duplicates an issue from step 1, or another candidate,
@@ -65,8 +71,8 @@ fine result. Drop any candidate that:
 - has a "done when" check that a person or an agent can't run and get a
   pass or fail from.
 
-Rank what's left by user impact divided by effort. Prefer one finding from
-each scout over three from the same scout when they're close.
+Rank what's left by user impact divided by effort. Spread picks across the
+scouts: when candidates are close, prefer one from a scout not yet picked.
 
 ## Step 4: file
 
