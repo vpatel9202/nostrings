@@ -345,7 +345,11 @@ async function probe() {
         finish(error.code ?? "error");
       }
     });
-  report.unixSocket = await connect({ path: "/nonexistent-nostrings-probe/probe.sock" });
+  // A socket the parent listens on: Seatbelt checks only a socket that
+  // exists (a missing path fails with ENOENT before any check), so the probe
+  // needs a real one. "connected" means Unix sockets are reachable.
+  const probeSocket = process.argv[2];
+  report.unixSocket = probeSocket ? await connect({ path: probeSocket }) : "no probe socket";
   report.tcp = await connect({ host: "127.0.0.1", port: 9 });
   try {
     const { spawnSync } = await import("node:child_process");

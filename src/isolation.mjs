@@ -121,8 +121,34 @@ function candidates() {
   return { list: out, seatbelt };
 }
 
-function spawnRunner(candidate) {
-  const child = spawn(candidate.command, candidate.args, { stdio: ["pipe", "pipe", "pipe"], env: {}, cwd: realpath(here) });
+// A Unix socket the runner's probe tries to connect to, listening only while
+// runners start. Returns {path, close}, or null where none can be made.
+async function probeSocket() {
+  if (process.platform === "win32") return null;
+  const net = await import("node:net");
+  try {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "nsp-"));
+    const file = path.join(dir, "p.sock");
+    const server = net.createServer((c) => c.destroy());
+    await new Promise((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(file, resolve);
+    });
+    return {
+      path: file,
+      close() {
+        server.close();
+        fs.rmSync(dir, { recursive: true, force: true });
+      },
+    };
+  } catch {
+    return null;
+  }
+}
+
+function spawnRunner(candidate, probePath) {
+  const args = probePath ? [...candidate.args, probePath] : candidate.args;
+  const child = spawn(candidate.command, args, { stdio: ["pipe", "pipe", "pipe"], env: {}, cwd: realpath(here) });
   const lines = new JsonLines(child.stdout);
   let stderr = "";
   child.stderr.setEncoding("utf8");
@@ -216,17 +242,22 @@ export async function startRunner() {
   const key = (c) => `${c.seatbelt}\0${c.args.join("\0")}`;
   const order = chosen ? [chosen, ...list.filter((c) => key(c) !== key(chosen))] : list;
   const failures = [];
-  for (const candidate of order) {
-    const runner = spawnRunner(candidate);
-    try {
-      const report = await runner.ready;
-      if (failures.length) notes.push(`stronger runner settings failed: ${failures.at(-1)}`);
-      chosen = candidate;
-      return { child: runner.child, lines: runner.lines, stderr: runner.stderr, isolation: assess(candidate, report, notes) };
-    } catch (error) {
-      failures.push(`${candidate.seatbelt ? "sandbox-exec + " : ""}${candidate.permission ?? "plain node"}: ${error.message}`);
-      runner.child.kill("SIGKILL");
+  const probe = await probeSocket();
+  try {
+    for (const candidate of order) {
+      const runner = spawnRunner(candidate, probe?.path);
+      try {
+        const report = await runner.ready;
+        if (failures.length) notes.push(`stronger runner settings failed: ${failures.at(-1)}`);
+        chosen = candidate;
+        return { child: runner.child, lines: runner.lines, stderr: runner.stderr, isolation: assess(candidate, report, notes) };
+      } catch (error) {
+        failures.push(`${candidate.seatbelt ? "sandbox-exec + " : ""}${candidate.permission ?? "plain node"}: ${error.message}`);
+        runner.child.kill("SIGKILL");
+      }
     }
+  } finally {
+    probe?.close();
   }
   throw new Error(`The script runner did not start:\n${failures.join("\n")}`);
 }
