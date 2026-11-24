@@ -2,6 +2,8 @@
 
 ## 0.6.0 (2026-11-19)
 
+- `ui.log(obj)`: a script can append one JSON line, tagged `source: "script"`,
+  to the action log (8 KB cap; strings follow `log.text`).
 - Cells no longer get `fetch`, `Buffer`, `URL` or string `eval`/`new Function`,
   and `globalThis.constructor` no longer reaches the host `Function` (`atob`
   and `btoa` are available instead). Hardening only; `vm` is still not a
