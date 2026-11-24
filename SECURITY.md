@@ -24,13 +24,16 @@ computer. Treat it with the same care as giving someone remote control.
   that app: system hotkeys (Cmd+Space, Mission Control, screenshots, the app
   switcher, lock screen) and typing while Spotlight's panel is open.
 - **Unanswered dialogs deny.** A dialog nobody answers denies after two
-  minutes, so an unattended agent cannot wait on it forever.
+  minutes, so an unattended agent cannot wait on it forever. In the dialogs
+  nostrings shows for phones, Deny is the default button, and while one is
+  open nostrings refuses every action that is not a read.
 - **Taking over stops a script.** If a script had to bring an app forward and
   you switch away, the script stops instead of taking focus back. A script
   working in the background keeps running while you use other apps, so switching
   apps does not stop it. With the optional Input Monitoring permission, pressing
   Escape stops any script (nostrings marks its own key events, so its own Escapes
-  do not count).
+  do not count): every request the script has not yet sent to the helper or
+  the phone is refused. A request already sent still finishes (see below).
 - **Menu-bar item.** While an agent is connected, Nostrings Helper shows a
   menu-bar item listing each session and its approved apps. Stop Running
   Scripts stops every running script. Revoke Session Approvals clears the
@@ -38,23 +41,28 @@ computer. Treat it with the same care as giving someone remote control.
   `allow` entries in `config.json`. Quit Nostrings Helper exits the helper; the
   next agent call starts it again.
 - **Scripts run in a separate process with no privileges.** Cells run in a
-  runner process that holds no connection to the helper or a phone, gets an
-  empty environment, and, under Node's permission model, can read only
+  runner process that holds no connection to the helper or a phone and gets
+  an empty environment. Under Node's permission model it can read only
   nostrings' own `src/` and cannot write files or start processes or workers.
   On macOS it also runs in a deny-default Seatbelt sandbox (`sandbox-exec`):
   no network, no Unix sockets (so not the helper's socket, the CLI daemon's,
-  or adb's port 5037), no file writes, no new processes, no signals to other
-  processes. Everything a script does is a request to the host process (the
-  MCP server or CLI daemon), which accepts only known methods, writes the
-  text of every approval dialog itself, refuses requests between calls and
-  for the rest of a call after a stop, and writes the action log from the
-  requests it forwards. `nostrings doctor` prints which layers applied.
+  or adb's port 5037), no reads outside nostrings' `src/`, node's own install
+  and the system's libraries, no file writes, no new processes, no signals to
+  other processes. On macOS the sandbox is required: if it cannot apply,
+  scripts do not run (see `isolation` below). Everything a script does is a
+  request to the host process (the MCP server or CLI daemon), which runs them
+  one at a time, accepts only known methods, clamps timing and repeat
+  counts, writes the text of every approval dialog itself, refuses requests
+  between calls and for the rest of a call after a stop, and writes the
+  action log from the requests it forwards. `nostrings doctor` prints which
+  layers applied.
 - **Action log.** `~/.nostrings/actions.log` has one JSON object per action:
   `ts`, `client` (the agent's name), `step` (the call's title, when given),
-  then the action's own fields (`app`, `action`, and that request's
-  parameters, for example `target`, `index`, or `length`). The host process
-  writes it, not the script's process. Typed text is recorded as a length
-  only, unless you set `"log": {"text": true}`.
+  `app`, `action`, and `params`, that request's parameters (for example
+  `target`, `index`, or `length`). The host process writes it, not the
+  script's process, and request parameters cannot overwrite the other
+  fields. Typed text is recorded as a length only, unless you set
+  `"log": {"text": true}`.
 - **Local only.** Nothing is sent over the network. The helper listens on a
   Unix socket that only your user can open.
 
@@ -91,6 +99,16 @@ dialogs, and an agent that could press them would approve itself.
   Use it only when you trust every agent you attach.
 - An approved app is approved for everything in it. Allowing a browser lets
   the agent use every site you are signed in to.
+- One approved Mac app currently reaches beyond itself. Pixel clicks and
+  drags are checked against that app's own window by the scripting layer,
+  which runs in the runner, so a script that escapes `vm` can send a click or
+  drag anywhere on screen through an approved app, and can capture other
+  windows through that app's screenshot request. Moving these checks into
+  Nostrings Helper is tracked; until then, treat approving any app as
+  approving input to the whole screen while that session runs.
+- Escape and stops refuse what a script has not yet sent, but do not cancel a
+  request already in the helper (a long drag, a typed string): it finishes.
+  Cancelling inside the helper is tracked.
 - Background input uses two private macOS (SkyLight) functions, the same
   approach as yabai, cua-driver, and Peekaboo. They are looked up at runtime;
   if a macOS update removes them, nostrings falls back to bringing the app
@@ -109,12 +127,17 @@ dialogs, and an agent that could press them would approve itself.
     than 25; there the script can also talk to Nostrings Helper's socket
     directly. The helper's own approval gate still holds, but the client name
     and the wording of the dialog are then the script's.
-  - If `sandbox-exec` cannot apply (for example when nostrings itself is
-    started inside another Seatbelt sandbox, as some agent shells are), or
-    Node has no permission model, the runner starts without that layer. The
-    session's first result and `nostrings doctor` say so.
+  - On macOS, if `sandbox-exec` cannot apply (for example when nostrings
+    itself is started inside another Seatbelt sandbox, as some agent shells
+    are), scripts do not run and the error says why. `"isolation":
+    "best-effort"` in `~/.nostrings/config.json` lets them run anyway with
+    whatever this host allows, and the session's first result and
+    `nostrings doctor` then say what is missing. On Linux it is always best
+    effort, with the same warning. If Node has no permission model, the
+    runner starts without that layer and warns.
   - Seatbelt lets the runner check whether any path exists (file metadata),
-    and read the system's libraries and node's own install, not your files.
+    and read the system's libraries and node's own install (for Homebrew's
+    node, its `Cellar` and `opt` directories), not your files.
   - A runner a script has taken over can send any request a script could,
     while a call runs. Each one is still checked and gated. The check that
     stops a script when you switch away from an app it brought forward runs

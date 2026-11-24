@@ -28,6 +28,18 @@
   script layer's own names and fields; typed text is still a length unless
   `log.text` is on.
 - `nostrings doctor` reports the script runner's isolation.
+- On macOS scripts run only inside the Seatbelt sandbox by default: if it
+  cannot apply, the call fails with an error that says why. Set
+  `"isolation": "best-effort"` in `config.json` to run anyway with a warning.
+  Each new runner tries the strongest settings again.
+- The host runs a call's requests one at a time (at most 64 waiting); after
+  Escape or a stop the waiting ones are refused. While an approval dialog for
+  a phone is open, only reads are allowed, and Deny is now that dialog's
+  default button. Repeat counts and durations are clamped, and numbers out of
+  range are refused.
+- A call that was stopped always fails and ends with the reason.
+- Action log entries nest the request's parameters under `params`.
+  Overwriting a saved script is logged as `replaced`.
 
 ## 0.6.0 (2026-11-19)
 

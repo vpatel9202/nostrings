@@ -74,14 +74,32 @@ function escapeAppleScript(text) {
   return String(text).replace(/\\/g, "\\\\").replace(/"/g, '\\"');
 }
 
-// "session" | "always" | "deny". On macOS a dialog; on Linux zenity if
+// Approval dialogs open in this process now. While one is up the broker
+// refuses input requests (a script must not click the dialog, or anything,
+// while the user is reading it).
+let openPrompts = 0;
+
+export function promptOpen() {
+  return openPrompts > 0;
+}
+
+export async function trackPrompt(promise) {
+  openPrompts += 1;
+  try {
+    return await promise;
+  } finally {
+    openPrompts -= 1;
+  }
+}
+
+// "session" | "always" | "deny". Deny is the default button. On macOS a dialog; on Linux zenity if
 // present; otherwise there is no one to ask, and the caller gets
 // needs_approval with the command that approves.
 export async function defaultPrompt({ client, title, detail }) {
   if (process.platform === "darwin") {
     const script =
       `display dialog "${escapeAppleScript(detail)}" with title "${escapeAppleScript(title)}" ` +
-      `buttons {"Deny", "Always Allow", "Allow for This Session"} default button "Allow for This Session" ` +
+      `buttons {"Deny", "Always Allow", "Allow for This Session"} default button "Deny" ` +
       `cancel button "Deny" with icon caution giving up after 120`;
     try {
       const { stdout } = await execFileAsync("osascript", ["-e", script], { timeout: 125_000 });
@@ -94,7 +112,7 @@ export async function defaultPrompt({ client, title, detail }) {
     }
   }
   try {
-    await execFileAsync("zenity", ["--question", `--title=${title}`, `--text=${detail}`, "--ok-label=Allow for This Session", "--cancel-label=Deny", "--timeout=120"], { timeout: 125_000 });
+    await execFileAsync("zenity", ["--question", `--title=${title}`, `--text=${detail}`, "--ok-label=Allow for This Session", "--cancel-label=Deny", "--default-cancel", "--timeout=120"], { timeout: 125_000 });
     return "session";
   } catch (error) {
     if (error.code === "ENOENT") return null;
@@ -121,11 +139,11 @@ export async function authorize({ pkg, name, client, device, approved, reason, p
     throw coded(`${label} is not in the allowlist. Run: nostrings allow ${pkg}`, "not_allowed");
   }
   const why = reason ?? (askFirst ? `${name ?? pkg} can move money, read messages or codes, or change the phone's settings.` : "");
-  const answer = await prompt({
+  const answer = await trackPrompt(prompt({
     client,
     title: "nostrings",
     detail: `Allow ${client} to control ${label} on ${device}?\n\n${why ? `${why}\n\n` : ""}Every action is logged in ${paths.log}.`,
-  });
+  }));
   if (answer === null) {
     throw coded(`${label} needs approval and there is no dialog on this host. Ask the user, then run: nostrings allow ${pkg}`, "needs_approval");
   }
@@ -142,11 +160,11 @@ export async function authorize({ pkg, name, client, device, approved, reason, p
 export async function authorizeLocked({ device, client, approved, prompt = defaultPrompt }) {
   const key = `locked:${device}`;
   if (approved.has(key)) return;
-  const answer = await prompt({
+  const answer = await trackPrompt(prompt({
     client,
     title: "nostrings",
     detail: `${device} is locked. Allow ${client} to act on it anyway?\n\nThis reaches apps behind the lock screen.`,
-  });
+  }));
   if (answer === null) throw coded(`${device} is locked and there is no dialog on this host. Unlock it, or ask the user.`, "needs_approval");
   if (answer === "deny") throw coded(`The user declined acting on ${device} while it is locked.`, "denied");
   approved.add(key);

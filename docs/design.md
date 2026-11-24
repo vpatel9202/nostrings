@@ -117,12 +117,22 @@ can say how isolated it is; 0.33 s to a ready runner under Seatbelt on Node
 26, macOS 27), and screenshots crossing one more pipe.
 
 Each layer is feature-detected by starting the runner with it, strongest
-first: Seatbelt plus the permission model, then the permission model alone,
-then plain node. A layer that cannot apply (sandbox-exec fails inside
-another Seatbelt sandbox; Node 20 needs `--experimental-permission`; Node
-before 25 cannot deny the network, so Linux there is not network-isolated)
-is reported, not skipped silently: the session's first result carries a
-warning and `nostrings doctor` prints the layers that applied.
+first, on every new runner: Seatbelt plus the permission model, then
+Seatbelt alone, then (Linux, or `isolation: "best-effort"`) the permission
+model alone, then plain node. On macOS the default (`isolation: "strict"`)
+is to refuse to run scripts at all when Seatbelt cannot apply, since without
+it Node before 25 leaves the network and the helper's socket open. A layer
+that cannot apply (Node 20 needs `--experimental-permission`; Node before 25
+cannot deny the network, so Linux there is not network-isolated) is
+reported, not skipped silently: the session's first result carries a
+warning and `nostrings doctor` prints the layers that applied. The runner's
+probe tests Unix sockets against a real socket the parent listens on while
+it starts, because Seatbelt only checks a socket that exists.
+
+The broker runs a cell's requests one at a time, in order (at most 64
+waiting), so a stop refuses everything still queued, and replies wait for
+the pipe to drain. While an approval dialog the broker opened (Android, a
+file push) is up, it refuses every request that is not a read.
 
 A timeout first makes the broker refuse the cell's requests and tells the
 runner to stop at its next action; if the script still has not stopped after
@@ -251,8 +261,9 @@ Computer use can click anything, so approval is part of the product:
 - Every action is appended to `~/.nostrings/actions.log` as one JSON object:
   `ts`, `client`, `step` (the call's title, when given), then the action's own
   fields: `app`, `action` (the backend method, such as `click` or
-  `systemKeys`), and that request's parameters, for example `index`, `x`,
-  `target`, or `length`. The broker writes it from the requests it forwards,
+  `systemKeys`), and `params`, that request's parameters (for example
+  `index`, `x`, `target`, or `length`), nested so they cannot overwrite the
+  other fields. The broker writes it from the requests it forwards,
   not the runner. Typed text (and `setValue` values) is logged as a length
   unless `log.text` is true.
 - The helper's socket is mode 0600 and checks the peer's uid.

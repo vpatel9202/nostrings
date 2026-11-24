@@ -18,12 +18,16 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { loadConfig } from "./config.mjs";
 import { JsonLines } from "./jsonlines.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 export const RUNNER = path.join(here, "runner.mjs");
 const SANDBOX_EXEC = "/usr/bin/sandbox-exec";
 const READY_MS = 15_000;
+// Homebrew's OpenSSL reads its config from <brew>/etc, which the sandbox does
+// not open; the runner does no TLS, so it gets an empty config instead.
+const OPENSSL_CONFIG = "--openssl-config=/dev/null";
 
 // Paths arrive as -D parameters, never spliced into the profile text.
 export const SEATBELT_PROFILE = `(version 1)
@@ -42,7 +46,8 @@ export const SEATBELT_PROFILE = `(version 1)
   (literal "/dev/random")
   (literal "/dev/urandom")
   (subpath (param "NODE_PREFIX"))
-  (subpath (param "LIB_PREFIX"))
+  (subpath (param "LIB_CELLAR"))
+  (subpath (param "LIB_OPT"))
   (subpath (param "SRC_DIR")))
 (allow sysctl-read)
 (allow signal (target self))
@@ -75,9 +80,15 @@ function nodePaths() {
   const home = realpath(os.homedir());
   const safe = (dir) => (dir !== "/" && dir !== home && !home.startsWith(`${dir}/`) ? dir : bin);
   const prefix = safe(path.dirname(path.dirname(bin)));
+  // Homebrew's node links libraries from other kegs (libuv, icu4c, ...),
+  // reached through <brew>/opt/<keg> and stored in <brew>/Cellar: those two,
+  // not all of the Homebrew prefix (its etc/ and var/ hold other programs'
+  // config and data).
   const cellar = prefix.indexOf("/Cellar/");
-  const lib = safe(cellar > 0 ? prefix.slice(0, cellar) : prefix);
-  return { bin, prefix, lib };
+  const brew = cellar > 0 ? prefix.slice(0, cellar) : null;
+  const libCellar = brew ? safe(`${brew}/Cellar`) : prefix;
+  const libOpt = brew ? safe(`${brew}/opt`) : prefix;
+  return { bin, prefix, libCellar, libOpt };
 }
 
 let seatbeltProbe;
@@ -113,7 +124,7 @@ function candidates() {
         seatbelt: true,
         permission: n.permission,
         command: SANDBOX_EXEC,
-        args: ["-D", `NODE_BIN=${node.bin}`, "-D", `NODE_PREFIX=${node.prefix}`, "-D", `LIB_PREFIX=${node.lib}`, "-D", `SRC_DIR=${src}`, "-p", SEATBELT_PROFILE, node.bin, ...n.args, RUNNER],
+        args: ["-D", `NODE_BIN=${node.bin}`, "-D", `NODE_PREFIX=${node.prefix}`, "-D", `LIB_CELLAR=${node.libCellar}`, "-D", `LIB_OPT=${node.libOpt}`, "-D", `SRC_DIR=${src}`, "-p", SEATBELT_PROFILE, node.bin, OPENSSL_CONFIG, ...n.args, RUNNER],
       });
     }
   }
@@ -231,26 +242,42 @@ export function describeIsolation(iso) {
   return `${layers.join(" + ")}; denied: ${denied.join(", ") || "nothing"}`;
 }
 
-let chosen = null; // the candidate that last started, reused by later sessions
+// "strict" (the default) requires the Seatbelt sandbox on macOS: if it cannot
+// apply, no runner starts. "best-effort" (config `isolation`) starts the
+// strongest runner this host allows and warns. Elsewhere it is always best
+// effort, with the warning.
+export function isolationMode(config) {
+  const mode = config?.isolation ?? "strict";
+  return mode === "best-effort" ? "best-effort" : "strict";
+}
 
-// Starts a runner and returns {child, lines, isolation}. Throws only when the
-// runner cannot start at all.
-export async function startRunner() {
+// Starts a runner and returns {child, lines, isolation}. Every start tries
+// the strongest settings first. Throws when the runner cannot start, or on
+// macOS in strict mode when it cannot start inside Seatbelt.
+// `filter` (tests) limits which settings are tried.
+export async function startRunner({ config, filter } = {}) {
   const { list, seatbelt } = candidates();
+  const strict = process.platform === "darwin" && isolationMode(config ?? safeConfig()) === "strict";
   const notes = [];
   if (process.platform === "darwin" && !seatbelt.ok) notes.push(`sandbox-exec cannot apply here (${seatbelt.reason}); is nostrings itself running inside a sandbox?`);
-  const key = (c) => `${c.seatbelt}\0${c.args.join("\0")}`;
-  const order = chosen ? [chosen, ...list.filter((c) => key(c) !== key(chosen))] : list;
+  let order = strict ? list.filter((c) => c.seatbelt) : list;
+  if (filter) order = order.filter(filter);
   const failures = [];
-  const probe = await probeSocket();
+  if (strict && !seatbelt.ok) failures.push(`sandbox-exec: ${seatbelt.reason}`);
+  const probe = order.length ? await probeSocket() : null;
   try {
     for (const candidate of order) {
       const runner = spawnRunner(candidate, probe?.path);
       try {
         const report = await runner.ready;
         if (failures.length) notes.push(`stronger runner settings failed: ${failures.at(-1)}`);
-        chosen = candidate;
-        return { child: runner.child, lines: runner.lines, stderr: runner.stderr, isolation: assess(candidate, report, notes) };
+        const isolation = assess(candidate, report, notes);
+        if (strict && !isolation.seatbelt) {
+          runner.child.kill("SIGKILL");
+          failures.push("sandbox-exec started, but the runner's probe found it not sandboxed");
+          continue;
+        }
+        return { child: runner.child, lines: runner.lines, stderr: runner.stderr, isolation };
       } catch (error) {
         failures.push(`${candidate.seatbelt ? "sandbox-exec + " : ""}${candidate.permission ?? "plain node"}: ${error.message}`);
         runner.child.kill("SIGKILL");
@@ -259,5 +286,21 @@ export async function startRunner() {
   } finally {
     probe?.close();
   }
+  if (strict) {
+    throw new Error(
+      "nostrings will not run scripts on this Mac without its Seatbelt sandbox, and the sandbox could not apply:\n" +
+        `${failures.join("\n")}\n` +
+        "This happens when nostrings itself runs inside another sandbox (some agent shells do). Start it outside that sandbox, " +
+        'or accept weaker isolation by setting "isolation": "best-effort" in ~/.nostrings/config.json (see SECURITY.md).',
+    );
+  }
   throw new Error(`The script runner did not start:\n${failures.join("\n")}`);
+}
+
+function safeConfig() {
+  try {
+    return loadConfig();
+  } catch {
+    return {};
+  }
 }

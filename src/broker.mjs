@@ -25,6 +25,7 @@ import { createBackend, createDeviceBackend } from "./backends/index.mjs";
 import { loadConfig, paths } from "./config.mjs";
 import { listScripts, readScript, saveScript, scriptsDir, SCRIPT_NAME } from "./scripts.mjs";
 import { LOG_LIMIT, scriptLogData } from "./api.mjs";
+import { promptOpen } from "./approval.mjs";
 
 const execFileAsync = promisify(execFile);
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -65,7 +66,59 @@ const SERIAL = /^[A-Za-z0-9._:\-[\]%@]{1,128}$/;
 const BUNDLE_ID = /^[A-Za-z0-9][A-Za-z0-9.\-_]{0,254}$/;
 const LANGUAGE = /^[A-Za-z]{2,8}(-[A-Za-z0-9]{1,8}){0,3}$/;
 const MAX_DEVICES = 16;
-const MAX_IMAGES = 32; // captures kept per cell, for out.image and OCR by reference
+// Captures kept per cell, for out.image and OCR by reference: a few shown
+// ones, a few silent ones, and a cap on their total size.
+const MAX_IMAGES = 16;
+const MAX_SHOWN = 8;
+const MAX_IMAGE_BYTES = 64 * 1024 * 1024;
+// Requests a cell may have waiting; the broker runs one at a time.
+const MAX_QUEUE = 64;
+const KILL_GRACE_MS = 1000;
+
+// Methods that only read: allowed while an approval dialog is open.
+let readsCache;
+function isRead(method) {
+  readsCache ??= new Set([...QUIET].filter((m) => !["move", "makeKey", "approveSurface"].includes(m)));
+  return readsCache.has(method);
+}
+
+// Helper methods whose approval is that of the app named by `pid` (the
+// helper's gate looks the app up from the pid). Passing one is what lets
+// `_bringForward` run `open -b` for that app; surface methods such as
+// allWindows are approved under their own key and do not count.
+const PID_GATED = new Set([
+  "activate", "isActive", "windows", "otherSpaceWindows", "axTree", "menus", "menuPress", "menuShortcut", "selectMenuItem",
+  "windowAction", "appAction", "hover", "gesture", "pasteStash", "hitTest", "elementFrame", "performAction", "actionNames",
+  "setValue", "selectText", "focusElement", "keys", "type", "click", "makeKey", "move", "scroll", "drag", "screenshot",
+]);
+
+// Numbers in requests: finite and of sane size; timing and repeat params
+// are clamped.
+const MAX_NUMBER = 1e7;
+const CLAMPS = { count: 3, clickCount: 3, holdMs: 10_000, ms: 10_000, duration: 10_000, durationMs: 10_000, timeout: 60_000, steps: 200, quiet: 10_000, max: 60_000 };
+
+export function checkParams(params, depth = 0) {
+  if (depth > 8) throw coded("Refused: params nest too deep", "bad_request");
+  if (Array.isArray(params)) {
+    if (params.length > 10_000) throw coded("Refused: too many items in a param", "bad_request");
+    return params.map((v) => checkParams(v, depth + 1));
+  }
+  if (typeof params === "number") {
+    if (!Number.isFinite(params) || Math.abs(params) > MAX_NUMBER) throw coded("Refused: a number in the request is out of range", "bad_request");
+    return params;
+  }
+  if (!isPlainObject(params)) return params;
+  const out = {};
+  for (const [key, value] of Object.entries(params)) {
+    let v = checkParams(value, depth + 1);
+    if (depth === 0 && typeof v === "number" && Object.hasOwn(CLAMPS, key)) {
+      if (v < 0) throw coded(`Refused: ${key} cannot be negative`, "bad_request");
+      v = Math.min(v, CLAMPS[key]);
+    }
+    out[key] = v;
+  }
+  return out;
+}
 
 function coded(message, code) {
   return Object.assign(new Error(message), { code });
@@ -119,7 +172,10 @@ export class Broker {
   #authorizedPids = new Set(); // pids a gated request passed the helper's approval for
   #onExit;
 
-  constructor({ runner, client = "An agent", imageMode = "inline", host, createDevice = (options) => createDeviceBackend(options), onExit } = {}) {
+  #openBundle;
+
+  constructor({ runner, client = "An agent", imageMode = "inline", host, createDevice = (options) => createDeviceBackend(options), onExit, openBundle } = {}) {
+    this.#openBundle = openBundle ?? ((bundleId) => execFileAsync("/usr/bin/open", ["-b", bundleId], { timeout: 20_000 }));
     this.#runner = runner;
     this.#client = client;
     this.#imageMode = imageMode;
@@ -127,7 +183,7 @@ export class Broker {
     this.#onExit = onExit;
     this.isolation = runner.isolation;
     this.#host = host ?? createBackend({ client });
-    this.#host.on?.("escape", () => this.#stop("Stopped: the user pressed Escape. Do not continue GUI actions until the user asks."));
+    this.#host.on?.("escape", () => this.#stop("Stopped: the user pressed Escape. Do not continue GUI actions until the user asks.", "escape"));
     runner.lines.on("message", (message) => this.#onMessage(message));
     runner.lines.on("overflow", () => this.#fail("The script runner sent a line over the size limit; it was stopped."));
     runner.child.on("exit", (code, signal) => this.#exited(code, signal));
@@ -160,7 +216,8 @@ export class Broker {
     if (!config?.log?.enabled) return;
     try {
       fs.mkdirSync(paths.home, { recursive: true, mode: 0o700 });
-      const line = { ts: new Date().toISOString(), client: this.#client, step: this.#cell?.title ?? undefined, ...entry };
+      // Fixed fields last: nothing in `entry` can overwrite them.
+      const line = { ...entry, ts: new Date().toISOString(), client: this.#client, step: this.#cell?.title ?? undefined };
       fs.appendFileSync(paths.log, `${JSON.stringify(line)}\n`, { mode: 0o600 });
     } catch {
       // Logging must never break an action.
@@ -186,7 +243,7 @@ export class Broker {
     const id = this.#nextCell++;
     let resolveDone;
     const done = new Promise((resolve) => (resolveDone = resolve));
-    this.#cell = { id, title: title || null, config, stopped: null, images: new Map(), nextImage: 1, notes: [], resolve: resolveDone };
+    this.#cell = { id, title: title || null, config, stopped: null, images: new Map(), imageBytes: 0, dropped: 0, nextImage: 1, notes: [], queue: [], pumping: false, resolve: resolveDone };
     // The runner gets the settings the script layer reads, not the approval
     // lists or mode.
     const { approval, allow, deny, askFirst, daemon, ...forRunner } = config;
@@ -195,7 +252,17 @@ export class Broker {
     const cell = this.#cell;
     this.#cell = null;
     if (reply.raw) return reply.raw;
-    return { ok: reply.ok && !cell.notes.length, content: this.#finish(reply.content, cell) };
+    const content = this.#finish(reply.content, cell);
+    if (cell.stopped) {
+      // Whatever the runner says, a stopped call failed, and says why.
+      const last = content.at(-1);
+      if (!(last?.type === "text" && last.text.endsWith(cell.stopped))) {
+        if (last?.type === "text") last.text += `\n${cell.stopped}`;
+        else content.push({ type: "text", text: cell.stopped });
+      }
+      return { ok: false, content };
+    }
+    return { ok: reply.ok && !cell.notes.length, content };
   }
 
   #scriptSnapshot() {
@@ -226,6 +293,7 @@ export class Broker {
         else out.push({ type: "image", mimeType: image.mimeType, data: image.data });
       }
     }
+    if (cell.dropped) pushText(`(${cell.dropped} earlier image${cell.dropped === 1 ? "" : "s"} from this call not shown: over the per-call limit)`);
     for (const note of cell.notes) pushText(note);
     return out;
   }
@@ -246,15 +314,19 @@ export class Broker {
   // Stops the running cell: the runner is told, and the broker refuses its
   // requests until the next cell.
   abort(reason) {
-    this.#stop(reason);
+    this.#stop(reason, "timeout");
   }
 
-  #stop(reason) {
+  // `by` says who stopped it: "escape", "timeout", "device", or "runner"
+  // (whose reason is the runner's own text, capped and logged as such).
+  #stop(reason, by = "host") {
     const cell = this.#cell;
     if (!cell || cell.stopped) return;
-    cell.stopped = String(reason).slice(0, 500);
-    this.#log({ action: "stopped", reason: cell.stopped });
+    const text = String(reason).slice(0, by === "runner" ? 300 : 500);
+    cell.stopped = by === "runner" && !text.startsWith("Stopped") ? `Stopped: ${text}` : text;
+    this.#log({ action: "stopped", by, reason: cell.stopped });
     this.#send({ op: "abort", reason: cell.stopped });
+    // Requests already queued are refused as they come up.
   }
 
   #onMessage(message) {
@@ -267,11 +339,14 @@ export class Broker {
         // out.image fired: keep that capture for the result.
         if (this.#cell && typeof message.ref === "string") {
           const image = this.#cell.images.get(message.ref);
-          if (image) image.shown = true;
+          if (image && !image.shown) {
+            image.shown = true;
+            this.#trimImages(this.#cell, message.ref);
+          }
         }
         return;
       case "stop":
-        if (typeof message.reason === "string") this.#stop(message.reason);
+        if (typeof message.reason === "string") this.#stop(message.reason, "runner");
         return;
       case "done":
         if (this.#cell && message.id === this.#cell.id) this.#cell.resolve({ ok: message.ok === true, content: message.content });
@@ -285,15 +360,53 @@ export class Broker {
     this.#send({ op: "reply", rid, ...body });
   }
 
-  async #onCall(message) {
-    const { rid, target, method } = message;
-    if (!Number.isSafeInteger(rid)) return;
+  // Requests run one at a time per cell, in order. A stop refuses the ones
+  // still waiting.
+  #onCall(message) {
+    if (!Number.isSafeInteger(message.rid)) return;
     const cell = this.#cell;
+    if (!cell) return this.#refuse(message, coded("Refused: no call is running. nostrings acts only while a js call runs.", "stopped"));
+    if (cell.stopped) return this.#refuse(message, coded(cell.stopped, "stopped"));
+    if (cell.queue.length >= MAX_QUEUE) return this.#refuse(message, coded(`Refused: more than ${MAX_QUEUE} requests waiting`, "busy"));
+    cell.queue.push(message);
+    if (!cell.pumping) this.#pump(cell);
+  }
+
+  async #pump(cell) {
+    cell.pumping = true;
     try {
-      if (!cell) throw coded("Refused: no call is running. nostrings acts only while a js call runs.", "stopped");
+      while (cell.queue.length) {
+        const message = cell.queue.shift();
+        await this.#runCall(cell, message);
+        // Respect the pipe: wait for the runner to take a reply before the next.
+        const stdin = this.#runner.child.stdin;
+        if (stdin?.writableNeedDrain && !this.#closed) {
+          await new Promise((resolve) => {
+            stdin.once("drain", resolve);
+            this.#runner.child.once("exit", resolve);
+          });
+        }
+      }
+    } finally {
+      cell.pumping = false;
+    }
+  }
+
+  #refuse(message, error) {
+    const meta = message.target === "device" ? this.#deviceMeta(message.serial) : undefined;
+    this.#reply(message.rid, { error: { message: String(error?.message ?? error), code: typeof error?.code === "string" ? error.code : "failed" }, ...(meta ? { meta } : {}) });
+  }
+
+  async #runCall(cell, message) {
+    const { rid, target, method } = message;
+    try {
+      if (this.#cell !== cell) throw coded("Refused: that call has ended.", "stopped");
       if (cell.stopped) throw coded(cell.stopped, "stopped");
       if (typeof method !== "string") throw coded("Refused: the request names no method", "bad_request");
-      const params = isPlainObject(message.params) ? message.params : {};
+      const params = checkParams(isPlainObject(message.params) ? message.params : {});
+      if ((target === "host" || target === "device") && !isRead(method) && promptOpen()) {
+        throw coded("Refused: an approval dialog is open; nothing acts until the user answers it.", "busy");
+      }
       let result;
       let meta;
       if (target === "host") result = await this.#hostCall(cell, method, params);
@@ -303,8 +416,7 @@ export class Broker {
       const imageRef = this.#keepImage(cell, result);
       this.#reply(rid, { result: result ?? null, ...(meta ? { meta } : {}), ...(imageRef ? { imageRef } : {}) });
     } catch (error) {
-      const meta = target === "device" ? this.#deviceMeta(message.serial) : undefined;
-      this.#reply(rid, { error: { message: String(error?.message ?? error), code: typeof error?.code === "string" ? error.code : "failed" }, ...(meta ? { meta } : {}) });
+      this.#refuse(message, error);
     }
   }
 
@@ -314,14 +426,30 @@ export class Broker {
     if (!isPlainObject(result) || typeof result.data !== "string" || !/^image\/(png|jpeg)$/.test(String(result.mimeType))) return null;
     const ref = `img${cell.nextImage++}`;
     cell.images.set(ref, { data: result.data, mimeType: result.mimeType, shown: false });
-    // Silent captures (polling, OCR) make room first; ones already shown stay
-    // unless a cell shows an unreasonable number.
-    if (cell.images.size > MAX_IMAGES) {
-      const [oldest] = [...cell.images].find(([, image]) => !image.shown) ?? [];
-      if (oldest) cell.images.delete(oldest);
-      else if (cell.images.size > MAX_IMAGES * 4) cell.images.delete(cell.images.keys().next().value);
-    }
+    cell.imageBytes += result.data.length;
+    this.#trimImages(cell);
     return ref;
+  }
+
+  // Silent captures (polling, OCR) go first, oldest first; shown ones only
+  // past MAX_SHOWN or the byte cap, and the result then says how many.
+  #trimImages(cell, keep) {
+    const drop = (ref) => {
+      const image = cell.images.get(ref);
+      cell.images.delete(ref);
+      cell.imageBytes -= image.data.length;
+      if (image.shown) cell.dropped += 1;
+    };
+    const over = () => cell.images.size > MAX_IMAGES || cell.imageBytes > MAX_IMAGE_BYTES;
+    while (over()) {
+      const silent = [...cell.images].find(([ref, image]) => !image.shown && ref !== keep);
+      if (!silent) break;
+      drop(silent[0]);
+    }
+    let shown = [...cell.images].filter(([, image]) => image.shown);
+    while ((shown.length > MAX_SHOWN || cell.imageBytes > MAX_IMAGE_BYTES) && shown.length) {
+      drop(shown.shift()[0]);
+    }
   }
 
   #remember(result) {
@@ -343,11 +471,11 @@ export class Broker {
     if (!HOST_METHODS.has(method)) throw coded(`Refused: ${method.slice(0, 60)} is not a method scripts may call`, "bad_request");
     if (method === "_bringForward") return this.#bringForward(cell, raw);
     const params = await this.#hostParams(method, raw);
-    if (!QUIET.has(method)) this.#log({ app: this.#hostApp(method, params), action: method, ...summarize(method, params, cell.config.log?.text) });
+    if (!QUIET.has(method)) this.#log({ app: this.#hostApp(method, params), action: method, params: summarize(method, params, cell.config.log?.text) });
     try {
       const result = await this.#host.request(method, params);
       if (["listApps", "resolveApp", "launch", "open"].includes(method)) this.#remember(result);
-      if (Number.isInteger(params.pid) && !["ping", "permissions", "listApps", "resolveApp", "forget", "cursor", "displays"].includes(method)) this.#authorizedPids.add(params.pid);
+      if (Number.isInteger(params.pid) && PID_GATED.has(method)) this.#authorizedPids.add(params.pid);
       return result;
     } catch (error) {
       // activate_failed comes after the helper's approval passed.
@@ -399,7 +527,7 @@ export class Broker {
     const bundleId = this.#pidBundle.get(pid);
     if (typeof bundleId !== "string" || !BUNDLE_ID.test(bundleId)) throw coded("Refused: no bundle id for that app", "not_found");
     this.#log({ app: bundleId, action: "bring forward" });
-    await execFileAsync("/usr/bin/open", ["-b", bundleId], { timeout: 20_000 });
+    await this.#openBundle(bundleId);
     return {};
   }
 
@@ -410,8 +538,8 @@ export class Broker {
     if (!device) {
       if (this.#devices.size >= MAX_DEVICES) throw coded("Refused: too many devices in one session", "bad_request");
       device = this.#createDevice({ serial: serial ?? null, client: this.#client });
-      device.on?.("escape", () => this.#stop("Stopped: the user asked to stop on the device. Do not continue GUI actions until the user asks."));
-      device.on?.("exit", ({ reason } = {}) => this.#stop(`Stopped: the nostrings server on ${device.label} stopped (${reason}). Do not continue GUI actions on it until the user asks.`));
+      device.on?.("escape", () => this.#stop("Stopped: the user asked to stop on the device. Do not continue GUI actions until the user asks.", "device"));
+      device.on?.("exit", ({ reason } = {}) => this.#stop(`Stopped: the nostrings server on ${device.label} stopped (${reason}). Do not continue GUI actions on it until the user asks.`, "device"));
       this.#devices.set(key, device);
     }
     return device;
@@ -434,7 +562,7 @@ export class Broker {
     } else {
       if (!DEVICE_METHOD.test(method) || method === "hello") throw coded(`Refused: ${method.slice(0, 60)} is not a method scripts may call`, "bad_request");
       if (!QUIET.has(method)) {
-        this.#log({ app: method === "notifications" ? "android:notifications" : typeof raw.pid === "string" ? raw.pid : undefined, action: method, device: device.label, ...summarize(method, raw, cell.config.log?.text) });
+        this.#log({ app: method === "notifications" ? "android:notifications" : typeof raw.pid === "string" ? raw.pid.slice(0, 200) : undefined, action: method, device: device.label, params: summarize(method, raw, cell.config.log?.text) });
       }
       result = await device.request(method, raw);
     }
@@ -465,8 +593,11 @@ export class Broker {
     }
     // saveScript
     try {
+      // Saving under an existing name replaces it (ui.scripts.source then
+      // save is how a script is changed); the log says so.
+      const replaced = listScripts().some((s) => s.name === raw.name);
       const file = saveScript(raw.name, raw.code, typeof raw.description === "string" ? raw.description : "");
-      this.#log({ action: "save script", script: raw.name, file });
+      this.#log({ action: "save script", script: raw.name, file, ...(replaced ? { replaced: true } : {}) });
       return { file };
     } catch (error) {
       cell.notes.push(`Saving script "${raw.name}" failed: ${error.message}`);
@@ -509,8 +640,22 @@ export class Broker {
   // Ends the runner and drops the backends, and with them this session's
   // approvals.
   kill(signal = "SIGKILL") {
+    const child = this.#runner.child;
     try {
-      this.#runner.child.kill(signal);
+      child.kill(signal);
+      // A runner that ignores SIGTERM (a cell can install a handler) gets
+      // SIGKILL after a short grace.
+      if (signal !== "SIGKILL") {
+        const timer = setTimeout(() => {
+          try {
+            child.kill("SIGKILL");
+          } catch {
+            // already gone
+          }
+        }, KILL_GRACE_MS);
+        timer.unref?.();
+        child.once?.("exit", () => clearTimeout(timer));
+      }
     } catch {
       // already gone
     }

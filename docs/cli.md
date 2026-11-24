@@ -104,6 +104,7 @@ merged key by key; arrays and scalars replace the default.
 | `log.text` | `false` | Log typed text instead of only its length. |
 | `daemon.idleMinutes` | `60` | The CLI daemon exits after this long without requests. `0` never exits. |
 | `timeoutMs` | `120000` | Default script time limit for `js` and `run`. |
+| `isolation` | `"strict"` | `strict`: on macOS, scripts run only inside the Seatbelt sandbox; if it cannot apply (for example inside another sandbox), they do not run. `best-effort`: run with whatever isolation this host allows and warn. Linux is always best effort. See `SECURITY.md`. |
 | `settleMs` | `80` | Pause after each action, in milliseconds. |
 
 `screenshot.maxLongSide` and `maxPixels` set the image scale; see "Coordinates
