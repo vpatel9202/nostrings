@@ -21,6 +21,10 @@ bd close <id>         # Complete work
 - Use `bd` for ALL task tracking — do NOT use TodoWrite, TaskCreate, or markdown TODO lists
 - Run `bd prime` for detailed command reference and session close protocol
 - Use `bd remember` for persistent knowledge — do NOT use MEMORY.md files
+- Beads is public (`refs/dolt/data` on GitHub, plus the committed
+  `.beads/issues.jsonl`). Never write workplace or employer names, personal
+  devices or serials, home paths, emails, or accounts into issues or memories.
+  Dolt keeps history, so a leak can't be edited away.
 
 **Architecture in one line:** issues live in a local Dolt DB; sync uses `refs/dolt/data` on your git remote; `.beads/issues.jsonl` is a passive export. See https://github.com/gastownhall/beads/blob/main/docs/core-concepts/sync-concepts.md for details and anti-patterns.
 

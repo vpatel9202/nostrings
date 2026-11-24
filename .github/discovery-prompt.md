@@ -17,9 +17,14 @@ Run:
 gh issue list --state all --limit 200 --json number,title,state,labels
 ```
 
-Anything already filed, open or closed, is off the table. A closed issue means
-it was rejected or is done, so don't propose it again in different words.
-Ignore anything `docs/roadmap.md` already lists unless you have new evidence.
+Then read `.beads/issues.jsonl`, the beads tracker's export (one JSON object
+per line, with `id`, `title`, `status` and `description`). Most planned work
+lives there, not in GitHub issues.
+
+Anything already filed in either place, open or closed, is off the table. A
+closed issue means it was rejected or is done, so don't propose it again in
+different words. Ignore anything `docs/roadmap.md` already lists unless you
+have new evidence.
 
 ## Step 2: three scouts
 

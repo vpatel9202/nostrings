@@ -23,7 +23,7 @@ init`, saved scripts, and the backend conformance check.
    are from 0.3.0 (then called glovebox) and cover macOS only.
 
 Open bug: horizontal background scroll has not been tried in a remote
-desktop viewer since the fix. (gb-1iz.12)
+desktop viewer since the fix. (ns-a4p)
 
 ## Token efficiency
 

@@ -84,10 +84,14 @@ dialogs, and an agent that could press them would approve itself.
   forward. They do not bypass any permission: the helper still needs
   Accessibility.
 - Scripts have no `require`, `fs`, or dynamic `import`, and see an empty
-  `process.env`. That limits a script to the `ui` API and approved apps, but an
-  approved app can still reach whatever that app can reach. Finder is not on the
-  ask-first list, and approving it lets an agent read or change any file Finder
-  can.
+  `process.env`, but that is not a sandbox. Cells run in a Node `vm` context,
+  which is not a security boundary: a script can reach the kernel's real
+  `process` (for example through a built-in's constructor) and run code as
+  you, and `fetch` is available to scripts. Treat anything that can send a cell
+  as able to run code on your Mac, not only to use approved apps. Isolating the
+  kernel is tracked as beads issue `ns-tzn`. Separately, an approved app can
+  reach whatever that app can reach. Finder is not on the ask-first list, and
+  approving it lets an agent read or change any file Finder can.
 - nostrings does not screen app or page content for prompt injection. Text an
   agent reads in an approved app can try to steer it.
 - `ui.scripts.save` writes a file in `~/.nostrings/scripts/`, the one place a

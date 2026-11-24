@@ -129,7 +129,7 @@ for.
 
 ## What this means for the gates
 
-These are recommendations; the decision is bead `gb-7my.3`.
+These are recommendations; the decision is recorded in android-plan.md.
 
 **Gate A (route).** Not met as written. Q1 passes only with a flag scrcpy does
 not set, Q2 is untested in the configuration Q1 needs (reading a display that

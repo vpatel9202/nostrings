@@ -182,8 +182,9 @@ for images under its own SDK root and rejects these paths.
   `STEAL_TOP_FOCUS_DISABLED` flag passes it on emulators.
 - Q2 works only while the virtual display has focus.
 - Q3 passes 56–83% of apps.
-- Gate B is met. Gate A is not met as written; the decision is bead
-  `gb-7my.3`.
+- Gate B is met. Gate A is not met as written; the decision was made
+  after the spike: the default display first, and Phase 3 makes the virtual
+  display the default only if reading it without focus works.
 
 Questions it must answer:
 
