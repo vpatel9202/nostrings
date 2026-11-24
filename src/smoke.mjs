@@ -389,6 +389,25 @@ const counts = (await fp.getAXState({ emit: false, disableDiffing: true })).matc
 await fp.pressKey("Back");
 JSON.stringify({ screen: fp.screen, route, counts });`);
     step("{foreground: true} works on the phone's own screen", phoneRoute.screen === "phone" && /^taps: 1/.test(phoneRoute.counts ?? "") && /^foreground/.test(phoneRoute.route ?? ""), phoneRoute.error ?? `${phoneRoute.screen} ${phoneRoute.route} ${phoneRoute.counts}`);
+
+    // An app that opens a second screen on the phone's own display while its
+    // main one stays on the hidden screen: reads stop with moved_to_phone_screen.
+    if (hello.screen === "hidden") {
+      await adb(["-s", transport, "shell", "am", "force-stop", FIXTURE_PACKAGE]);
+      const moved = await run(`
+const mp = await ui.device(${JSON.stringify(transport)}).getApp(${JSON.stringify(FIXTURE_PACKAGE)}, { foreground: false });
+await mp.activate();
+await mp.click((await mp.find({ role: "button", label: "Open on phone screen" })).index);
+let code = null, message = null;
+for (let i = 0; i < 16 && !code; i++) {
+  await sleep(250);
+  try { await mp.getAXState({ emit: false }); } catch (e) { code = e.code; message = String(e.message).split("\\n")[0]; }
+}
+JSON.stringify({ code, message, screen: mp.screen });`);
+      step("an app opening itself on the phone's screen raises moved_to_phone_screen", moved.code === "moved_to_phone_screen", moved.error ?? `code ${moved.code} on ${moved.screen} screen: ${moved.message}`);
+      // Put the phone's screen back as it was.
+      await adb(["-s", transport, "shell", "am", "force-stop", FIXTURE_PACKAGE]).catch(() => {});
+    }
   } finally {
     mcp.close();
     if (!keep) {
