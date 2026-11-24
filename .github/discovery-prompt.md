@@ -28,9 +28,10 @@ have new evidence.
 
 ## Step 2: three scouts
 
-Run the three scouts below as separate subagents, so each one starts with a
-clean context. If subagents aren't available, run them one after another
-yourself. Each scout returns up to 5 candidates, and each candidate needs:
+Run the three scouts below one after another yourself. Subagents are turned
+off: this run ends the moment you end your turn, so background work would be
+lost. Finish all three scouts, the judge and the filing in this one turn.
+Keep notes short between scouts so later ones have room. Each scout returns up to 5 candidates, and each candidate needs:
 title, kind (bug, enhancement, or documentation), evidence, why it matters,
 and a "done when" check.
 

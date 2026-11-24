@@ -22,7 +22,7 @@ concurrency:
 jobs:
   discover:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     env:
       GH_TOKEN: ${{ github.token }}
     steps:
@@ -58,5 +58,6 @@ jobs:
           show_full_output: true
           claude_args: >-
             --model opus
-            --max-turns 60
-            --allowedTools "Read,Glob,Grep,WebSearch,WebFetch,Agent,Bash(npm test),Bash(git log:*),Bash(git diff:*),Bash(gh issue list:*),Bash(gh issue view:*),Bash(gh issue create:*)"
+            --max-turns 150
+            --allowedTools "Read,Glob,Grep,WebSearch,WebFetch,Bash(npm test),Bash(git log:*),Bash(git diff:*),Bash(gh issue list:*),Bash(gh issue view:*),Bash(gh issue create:*)"
+            --disallowedTools "Agent,Task,ScheduleWakeup,CronCreate,Monitor"
