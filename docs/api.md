@@ -386,7 +386,12 @@ await clock.getAXState();
   (Chrome) close the older one. So if the user has the app running,
   `activate()` fails with `open_on_phone` and changes nothing; ask the user
   to close it, or pass `{foreground: true}` to `getApp`, which also switches
-  an existing handle. While nostrings has a single-copy app on a hidden
+  an existing handle. The screen is chosen by each `getApp` call: one without
+  `foreground` returns the handle to the hidden screen. If nostrings itself
+  opened the app on the phone's screen (it was not running before), that copy
+  is stopped first, so the app restarts there and unsaved state is lost; an app
+  the user had open is never stopped. Ending the session (`js_reset`) likewise
+  stops the apps it opened on the phone's screen. While nostrings has a single-copy app on a hidden
   screen, the user opening it on the phone shows nothing until the session
   ends.
 - Hidden-screen apps stay out of the phone's recent apps.

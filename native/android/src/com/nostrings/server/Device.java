@@ -57,6 +57,41 @@ final class Device {
     private final ThreadLocal<String> session = ThreadLocal.withInitial(() -> "");
     // Hidden screens by session and app, made on first use.
     private final Map<String, Hidden> hidden = new HashMap<>();
+    // Apps a session opened on the phone's own screen ({foreground: true})
+    // that were not running before, by session. Moving the app back to the
+    // hidden screen, or ending the session, stops them: left running they
+    // would look like the user's copy and refuse a hidden-screen open.
+    private final Map<String, java.util.Set<String>> phoneOpened = new HashMap<>();
+
+    private void stopPhoneOpened(String name, String only) {
+        java.util.List<String> stop = new ArrayList<>();
+        synchronized (phoneOpened) {
+            java.util.Set<String> mine = phoneOpened.get(name);
+            if (mine == null) return;
+            if (only == null) {
+                stop.addAll(mine);
+                phoneOpened.remove(name);
+            } else if (mine.remove(only)) {
+                stop.add(only);
+            }
+        }
+        for (String pkg : stop) {
+            try {
+                Process proc = new ProcessBuilder("am", "force-stop", pkg).redirectErrorStream(true).start();
+                proc.getInputStream().readAllBytes();
+                proc.waitFor();
+            } catch (Throwable ignored) {
+                // Left running at worst.
+            }
+        }
+        if (only != null && !stop.isEmpty()) {
+            for (int i = 0; i < 30; i++) {
+                Map<Integer, Integer> t = tasksOf(only);
+                if (t == null || t.isEmpty()) break;
+                sleep(100);
+            }
+        }
+    }
 
     private Tree tree() {
         synchronized (trees) {
@@ -70,6 +105,7 @@ final class Device {
 
     // A session ended (its host connection closed): close its hidden screens.
     private void closeSession(String name) {
+        stopPhoneOpened(name, null);
         synchronized (hidden) {
             java.util.Iterator<Map.Entry<String, Hidden>> it = hidden.entrySet().iterator();
             while (it.hasNext()) {
@@ -411,6 +447,9 @@ final class Device {
             Hidden h = hidden.get(hiddenKey(pkg));
             if (h != null) return h.id;
             if (!create) return -1;
+            // This session's own copy on the phone's screen (from an earlier
+            // {foreground: true}) is stopped first, so the app starts afresh here.
+            stopPhoneOpened(session.get(), pkg);
             // Checked before a display exists, so a refusal leaves nothing behind.
             refuseSecondCopy(pkg);
             if (frames == null) {
@@ -582,6 +621,12 @@ final class Device {
                 }
             }
             unlockScreen();
+            Map<Integer, Integer> before = userTasks(pkg);
+            if (before != null && before.isEmpty()) {
+                synchronized (phoneOpened) {
+                    phoneOpened.computeIfAbsent(session.get(), k -> new java.util.HashSet<>()).add(pkg);
+                }
+            }
         }
         // -W waits for the launch to finish, which a cold start needs. Not on a
         // hidden screen: while the phone sleeps -W never returns, though the

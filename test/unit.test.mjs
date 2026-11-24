@@ -339,6 +339,10 @@ test("Android handles use the hidden screen unless told otherwise", async () => 
   const first = await api.device().getApp("com.e");
   assert.equal(await api.device().getApp("com.e", { foreground: true }), first);
   assert.equal(first.screen, "phone");
+  // A later getApp without the option goes back to the hidden screen.
+  assert.equal(await api.device().getApp("com.e"), first);
+  assert.equal(first.screen, "hidden");
+  assert.equal((await api.device().getApp("com.e", { foreground: false })).screen, "hidden");
   // Before Android 14 there is no hidden screen.
   assert.equal((await make(device(false)).device().getApp("com.d")).screen, "phone");
 });
