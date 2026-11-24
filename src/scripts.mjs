@@ -61,8 +61,9 @@ export function wrapScript(source) {
   return `(async (args) => {\n${source}\n})`;
 }
 
-// "a=1 b=x" style command-line pairs into an args object; numbers and
-// true/false are converted, everything else stays a string.
+// "a=1 b=x" style command-line pairs into an args object; true/false and
+// canonical numbers (String(Number(v)) === v) are converted, everything else
+// stays a string.
 export function parseArgPairs(pairs) {
   const args = {};
   for (const pair of pairs) {
@@ -70,7 +71,9 @@ export function parseArgPairs(pairs) {
     if (at < 1) throw new Error(`Script arguments look like key=value; got ${JSON.stringify(pair)}`);
     const key = pair.slice(0, at);
     const raw = pair.slice(at + 1);
-    args[key] = raw === "true" ? true : raw === "false" ? false : raw !== "" && !Number.isNaN(Number(raw)) ? Number(raw) : raw;
+    const num = Number(raw);
+    // Only canonical numbers convert, so "012345", " " and "1e3" stay as typed.
+    args[key] = raw === "true" ? true : raw === "false" ? false : Number.isFinite(num) && String(num) === raw ? num : raw;
   }
   return args;
 }

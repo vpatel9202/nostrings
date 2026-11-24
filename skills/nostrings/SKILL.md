@@ -93,7 +93,14 @@ so the phone's own screen is untouched. If `activate()` fails with
 Keys use xdotool syntax: `Return`, `Tab`, `Escape`, `ctrl+a`, `shift+Tab`,
 `super+c` (Cmd on macOS). `typeText` treats `\n` as Return. Input stays in
 the background: the app is not brought forward and the user's cursor does
-not move. If an app ignores it, pass `{foreground: true}` to that action.
+not move. If an action fails in the background, retry it once in the
+background with `{window: <title>}` before passing `{foreground: true}`. Use
+foreground only for the step that needs it, not every action after it: the
+app stays frontmost and the user's app switch then trips "Stopped:".
+
+To rename a file in Finder: click the item, `pressKey("Return")`,
+`pressKey("super+a")` (the field selects only the base name, and `ctrl+a`
+moves to line start on macOS), `typeText(name)`, `pressKey("Return")`.
 
 `help()` prints the full API; `help("scroll")` prints one part.
 

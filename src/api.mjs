@@ -288,12 +288,28 @@ export class App {
     // (not per list position or title) and diffs across title changes.
     // Large trees print as an outline (offscreen elements dropped, deep
     // levels folded); find() and nodes() still see everything.
-    const outline = options.full ? { nodes: tree.nodes, folded: new Map(), offscreen: 0, deeper: 0 } : outlineTree(tree.nodes, { limit: ax.outlineAbove ?? 250, bounds: [...view.origin, ...view.size] });
+    // {root: index} prints only the subtree under that element (an index copied
+    // from a folded line), re-based so the root is at depth 0. It composes with
+    // the other options and keeps its own baseline per root, so a plain read
+    // afterwards still diffs against the last full read.
+    let nodes = tree.nodes;
+    const hasRoot = options.root !== undefined && options.root !== null;
+    if (hasRoot) {
+      const at = Number.isInteger(options.root) ? nodes.findIndex((n) => n.i === options.root) : -1;
+      if (at < 0) {
+        throw new Error(`No element ${options.root} in ${this.name}'s window ${view.window}: the index is stale or not in this window. Call getAXState() again to see current indices${tree.truncated ? " (the tree was truncated; pass {maxNodes} to reach deeper elements)" : ""}.`);
+      }
+      const end = nodes.findIndex((n, k) => k > at && n.d <= nodes[at].d);
+      const rootDepth = nodes[at].d;
+      nodes = nodes.slice(at, end < 0 ? undefined : end).map((n) => ({ ...n, d: n.d - rootDepth }));
+    }
+    const outline = options.full ? { nodes, folded: new Map(), offscreen: 0, deeper: 0 } : outlineTree(nodes, { limit: ax.outlineAbove ?? 250, bounds: [...view.origin, ...view.size] });
     const fold = (list) => list.map((line, k) => (outline.folded.has(outline.nodes[k].i) ? `${line} (+${outline.folded.get(outline.nodes[k].i)} inside)` : line));
     const base = fold(formatTree(outline.nodes));
     const lines = frames ? fold(formatTree(outline.nodes, { toImage: (f) => toImage(view, f) })) : base;
-    const key = tree.window.windowId ?? view.windowId ?? `#${view.window}`;
-    const header = `${this.name} — window ${view.window} "${tree.window.title}" — image ${view.width}x${view.height}${view.note ?? ""}`;
+    const windowKey = tree.window.windowId ?? view.windowId ?? `#${view.window}`;
+    const key = hasRoot ? `${windowKey}/root ${options.root}` : windowKey;
+    const header = `${this.name} — window ${view.window} "${tree.window.title}"${hasRoot ? ` — under element ${options.root}` : ""} — image ${view.width}x${view.height}${view.note ?? ""}`;
     const last = disableDiffing ? undefined : this.#lastTrees.get(key);
     let text;
     // A first {frames: true} read prints in full: the frames are what was asked for.
@@ -315,12 +331,13 @@ export class App {
     }
     if (outline.offscreen || outline.deeper) {
       const left = [outline.offscreen && `${outline.offscreen} outside the window`, outline.deeper && `${outline.deeper} in folded levels`].filter(Boolean).join(", ");
-      text += `\n(outline: ${outline.nodes.length} of ${tree.nodes.length} elements; not shown: ${left}. find() and nodes() reach all of them; {full: true} prints everything)`;
+      text += `\n(outline: ${outline.nodes.length} of ${tree.nodes.length} elements; not shown: ${left}. find() and nodes() reach all of them; {full: true} prints everything; {root: N} prints only what is under element N, e.g. one that ends in "(+K inside)")`;
     }
     // The baseline is what the model last saw, so silent reads leave it alone.
     if (emit) {
       this.#lastTrees.set(key, { lines, base, frames });
-      this.#waitBase = { pixels: false, value: base.join("\n") };
+      // A subtree read is not what waitForChange compares the window against.
+      if (!hasRoot) this.#waitBase = { pixels: false, value: base.join("\n") };
       this.#ctx.out.text(text);
     }
     return text;
@@ -576,10 +593,27 @@ export class App {
   async #activate() {
     if (this.#activatedCell === this.#ctx.cell) {
       if ((await this.#call("isActive")).active) return;
-      this.#ctx.stop(`Stopped: the user switched away from ${this.name}. Do not continue GUI actions until the user asks.`);
+      // One false reading can be a transient (a Space switch, a menu or
+      // Spotlight flickering focus): look again before ending the call.
+      await new Promise((r) => setTimeout(r, 150));
+      if ((await this.#call("isActive")).active) return;
+      const front = await this.#frontmostName();
+      this.#ctx.log?.({ app: this.bundleId ?? this.name, action: "stopped", reason: "user switched away", frontmost: front ?? "unknown" });
+      this.#ctx.stop(`Stopped: the user switched away from ${this.name}${front ? ` to ${front}` : " (frontmost app unknown)"}. Do not continue GUI actions until the user asks.`);
     }
     await this.#bringForward();
     this.#activatedCell = this.#ctx.cell;
+  }
+
+  // Name of the app in front, from the ungated listApps (macOS reports
+  // `active` per app). Best effort: undefined when the backend does not say.
+  async #frontmostName() {
+    try {
+      const front = (await this.#backend.request("listApps")).find((a) => a.running !== false && a.active);
+      return front?.name || front?.bundleId || undefined;
+    } catch {
+      return undefined;
+    }
   }
 
   // macOS may refuse an activation requested by a background app, and a

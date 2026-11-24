@@ -63,6 +63,14 @@ await calc.getAXState();
   line that hides more ends in `(+N inside)`. A note under the read says
   what was left out. `find()` and `nodes()` still see every element;
   `getAXState({full: true})` prints all of them.
+  `getAXState({root: index})` prints only the element `index` and what is
+  under it, with the same outline limit and diffing: copy the index from a
+  folded `(+N inside)` line. Each root keeps its own diff baseline, so a
+  later plain `getAXState()` still diffs against the last full read, and a
+  repeat of the same `{root}` read says "no change". It works with `window`,
+  `full`, `frames`, `menus`, and `disableDiffing`. An index that is not in
+  the window now (stale, or in another window) throws; call `getAXState()`
+  again for current indices.
 - Line format: `<index> <role> "<label>" value="..." id=... help="..."
   (focused, selected, disabled, settable) actions: ...`. Indentation is depth.
   Indices are stable for the life of the session, so a diff means what it says.
@@ -162,8 +170,10 @@ windows).
 - `app.drag(from, to)` or `app.drag([[x, y], [x, y], ...])`.
 - `app.setValue(index, value)` sets a field's value directly. Finder file
   names refuse it (Finder would relabel without renaming); rename with a
-  click on the item, `pressKey("Return")`, `typeText(name)`,
-  `pressKey("Return")`, which works in the background.
+  click on the item, `pressKey("Return")`, `pressKey("super+a")`,
+  `typeText(name)`, `pressKey("Return")`, which works in the background.
+  The field selects only the base name, so `super+a` (Cmd+A) selects it all
+  first; `ctrl+a` moves to line start on macOS.
 - `app.focus(index)` gives an element keyboard focus.
 - `app.selectText(index, {start, length})` selects text in a field.
 - `app.listActions(index)` and `app.performSecondaryAction(index, name)`

@@ -160,6 +160,113 @@ test("a title change or a frames read does not reprint the tree", async () => {
   assert.match(printed[3], /no change/);
 });
 
+// A window with 300 groups of two children each (901 elements), so the
+// outline folds the children and prints "(+2 inside)" on each group.
+function bigApp() {
+  const state = { leaf: "a" };
+  const printed = [];
+  const nodes = () => {
+    const list = [{ i: 0, d: 0, role: "AXWindow", title: "Big", frame: [0, 0, 200, 300] }];
+    let i = 1;
+    for (let g = 0; g < 300; g++) {
+      list.push({ i: i++, d: 1, role: "AXGroup", desc: g === 0 ? `group 0 ${state.leaf}` : `group ${g}`, frame: [0, 0, 100, 10] });
+      list.push({ i: i++, d: 2, role: "AXButton", desc: `b${g}`, frame: [0, 0, 10, 10] });
+      list.push({ i: i++, d: 2, role: "AXStaticText", desc: `t${g}`, value: g === 1 ? state.leaf : "x", frame: [0, 0, 10, 10] });
+    }
+    return list;
+  };
+  const ctx = {
+    config: { screenshot: { maxLongSide: 1568, maxPixels: 1_150_000 }, ax: { maxNodes: 2000, maxDepth: 40, maxTextLength: 160 } },
+    checkAbort() {},
+    out: { text: (t) => printed.push(t) },
+    backend: {
+      async request(method) {
+        if (method === "windows") return [{ index: 0, windowId: 7, frame: [0, 0, 200, 300], scale: 2, title: "Big", focused: true }];
+        if (method === "axTree") return { window: { title: "Big", windowId: 7 }, nodes: nodes() };
+        throw new Error(`unexpected ${method}`);
+      },
+    },
+  };
+  return { app: new App(ctx, { name: "Big", pid: 1 }), state, printed };
+}
+
+test("getAXState({root}) prints one subtree with its own baseline", async () => {
+  const { app, state, printed } = bigApp();
+  await app.getAXState();
+  assert.match(printed[0], /group 1" \(\+2 inside\)/);
+  // group 1 is element 4: children 5 and 6.
+  await app.getAXState({ root: 4 });
+  const sub = printed[1];
+  assert.match(sub, /under element 4/);
+  assert.match(sub, /\b4 group "group 1"/);
+  assert.match(sub, /\b5 button "b1"/);
+  assert.match(sub, /\b6 text "t1"/);
+  assert.doesNotMatch(sub, /group 0|group 2|b0"|b2"/);
+  await app.getAXState({ root: 4 });
+  assert.match(printed[2], /no change/);
+  // The leaf changes: the subtree diffs against its own baseline, and a plain
+  // read afterwards still diffs against the last full read (not the subtree).
+  state.leaf = "b";
+  await app.getAXState({ root: 4 });
+  assert.match(printed[3], /changes since last read/);
+  assert.match(printed[3], /~\t6 text "t1" value="b"/);
+  await app.getAXState();
+  assert.match(printed[4], /changes since last read/);
+  // Only the visible group 0 changed in the outline; the subtree edit was folded away.
+  assert.match(printed[4], /~\s*1 group "group 0 b"/);
+  assert.doesNotMatch(printed[4], /— under element \d|group 1"/);
+  // {full} composes: a subtree under a root prints unfolded.
+  await app.getAXState({ root: 0, full: true, disableDiffing: true });
+  assert.match(printed[5], /group 299/);
+  await assert.rejects(() => app.getAXState({ root: 99999 }), /Call getAXState\(\) again/);
+  await assert.rejects(() => app.getAXState({ root: "4" }), /Call getAXState\(\) again/);
+});
+
+// An App whose isActive readings the test scripts, to see when a call stops.
+function activeApp(readings, apps = [{ name: "Notes", bundleId: "com.apple.Notes", running: true, active: true }]) {
+  const stopped = [];
+  const logged = [];
+  const ctx = {
+    config: { ax: {} },
+    cell: 1,
+    checkAbort() {},
+    log: (e) => logged.push(e),
+    stop(reason) {
+      stopped.push(reason);
+      throw new Error(reason);
+    },
+    out: { text() {} },
+    backend: {
+      async request(method) {
+        if (method === "isActive") return { active: readings.length > 1 ? readings.shift() : readings[0] };
+        if (method === "activate") return {};
+        if (method === "listApps") return apps;
+        throw new Error(`unexpected ${method}`);
+      },
+    },
+  };
+  return { app: new App(ctx, { name: "Calc", pid: 1 }), stopped, logged };
+}
+
+test("one false isActive reading does not stop the call", async () => {
+  const { app, stopped } = activeApp([false, true]);
+  await app.activate(); // brings forward, once for this cell
+  await app.activate(); // false, then true: carries on
+  assert.deepEqual(stopped, []);
+});
+
+test("two false isActive readings stop and name the frontmost app", async () => {
+  const { app, stopped, logged } = activeApp([false]);
+  await app.activate();
+  await assert.rejects(() => app.activate(), /switched away from Calc to Notes/);
+  assert.match(stopped[0], /^Stopped: the user switched away from Calc to Notes\./);
+  assert.equal(logged.at(-1).frontmost, "Notes");
+  // A backend that cannot say what is in front still stops.
+  const unknown = activeApp([false], []);
+  await unknown.app.activate();
+  await assert.rejects(() => unknown.app.activate(), /frontmost app unknown/);
+});
+
 test("image space round-trips to screen points", () => {
   const limits = { maxLongSide: 1568, maxPixels: 1_150_000 };
   const view = viewFor({ index: 0, frame: [405, 531, 230, 408], scale: 2 }, limits);
@@ -377,6 +484,9 @@ test("saved scripts: names are checked, the first line describes, args parse", a
     assert.equal(await fn({ a: 2, b: 40 }), 42);
     assert.throws(() => s.readScript("missing"), /Saved: sum/);
     assert.deepEqual(s.parseArgPairs(["a=2", "b=x", "c=true", "d="]), { a: 2, b: "x", c: true, d: "" });
+    assert.deepEqual(s.parseArgPairs(["code=012345", "x= "]), { code: "012345", x: " " });
+    assert.deepEqual(s.parseArgPairs(["n=-3.5", "z=02134", "e=1e3", "h=0x10", "q=NaN", "i=Infinity"]),
+      { n: -3.5, z: "02134", e: "1e3", h: "0x10", q: "NaN", i: "Infinity" });
     assert.throws(() => s.parseArgPairs(["novalue"]), /key=value/);
   } finally {
     if (before === undefined) delete process.env.NOSTRINGS_HOME;

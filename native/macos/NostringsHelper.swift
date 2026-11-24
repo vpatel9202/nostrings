@@ -556,7 +556,7 @@ func setValue(_ params: [String: Any]) throws -> [String: Any] {
     // the file keeps its old name. Only the rename editor (focused) commits.
     if attribute == kAXValueAttribute, NSRunningApplication(processIdentifier: pid_t(pid))?.bundleIdentifier == "com.apple.finder",
        (axAttr(element, kAXRoleAttribute) as String?) == kAXTextFieldRole, (axAttr(element, kAXFocusedAttribute) as Bool?) != true {
-        throw HelperError("Finder would show the new name without renaming the file. Rename instead: click the item, pressKey(\"Return\"), typeText(newName), pressKey(\"Return\").", code: "label_only")
+        throw HelperError("Finder would show the new name without renaming the file. Rename instead: click the item, pressKey(\"Return\"), pressKey(\"super+a\") to select the whole name (the field selects only the base name), typeText(newName), pressKey(\"Return\").", code: "label_only")
     }
     var value: CFTypeRef
     if let s = params["value"] as? String { value = s as CFString }
