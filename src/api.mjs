@@ -1448,12 +1448,12 @@ function matcher(query) {
     ["focused", "selected", "disabled", "settable"].every((f) => q[f] == null || Boolean(n[f]) === q[f]);
 }
 
-const LOG_LIMIT = 8192;
+export const LOG_LIMIT = 8192;
 
 // ui.log(obj): checks `obj` is plain JSON data (any realm: cells run in a vm
 // context) and returns a copy, with strings reduced to their length unless
 // config.log.text is on, like typed text in the action log.
-function scriptLogData(value, keepText, seen = new Set(), depth = 0) {
+export function scriptLogData(value, keepText, seen = new Set(), depth = 0) {
   if (depth > 20) throw new Error("ui.log: object is nested deeper than 20 levels");
   if (value === null || typeof value === "boolean") return value;
   if (typeof value === "number") {

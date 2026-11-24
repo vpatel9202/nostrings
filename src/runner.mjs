@@ -164,8 +164,11 @@ const ctx = {
     return config;
   },
   out,
-  // The parent writes the action log from the requests it sees.
-  log() {},
+  // The parent writes the action log from the requests it sees. Only
+  // ui.log's own entries are forwarded; the broker checks them again.
+  log(entry) {
+    if (entry?.source === "script") return call("nostrings", "scriptLog", { data: entry.data });
+  },
   help,
   get cell() {
     return cellNumber;

@@ -792,6 +792,7 @@ test("broker: typed text is logged as a length unless log.text is on", async () 
       ["host", "clipboard", { op: "write", text: SECRET }],
       ["device", "type", { pid: "com.example", text: SECRET }],
       ["device", "setValue", { pid: "com.example", index: 2, value: SECRET }],
+      ["nostrings", "scriptLog", { data: { note: SECRET, n: 3 } }],
     ];
     let rid = 0;
     for (const [target, method, params] of requests) lines.emit("message", { op: "call", rid: ++rid, target, method, params });
@@ -804,6 +805,7 @@ test("broker: typed text is logged as a length unless log.text is on", async () 
     assert.equal(log.trim().split("\n").length, requests.length);
     assert.doesNotMatch(log, /hunter2/);
     assert.match(log, new RegExp(`"length":${SECRET.length}`));
+    assert.match(log, /"source":"script","data":\{"note":"\[16 chars\]","n":3\}/);
   });
 });
 

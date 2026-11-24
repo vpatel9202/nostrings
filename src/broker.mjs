@@ -24,6 +24,7 @@ import { fileURLToPath } from "node:url";
 import { createBackend, createDeviceBackend } from "./backends/index.mjs";
 import { loadConfig, paths } from "./config.mjs";
 import { listScripts, readScript, saveScript, scriptsDir, SCRIPT_NAME } from "./scripts.mjs";
+import { LOG_LIMIT, scriptLogData } from "./api.mjs";
 
 const execFileAsync = promisify(execFile);
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -43,7 +44,7 @@ export const HOST_METHODS = new Set([
 // one that is not read-only), but not `hello` and not the `_` debug methods,
 // which are ungated. `_push` is the broker's own (a file copy that asks).
 const DEVICE_METHOD = /^[a-z][A-Za-z]{1,40}$/;
-const NOSTRINGS_METHODS = new Set(["ocr", "saveScript", "scriptRun"]);
+const NOSTRINGS_METHODS = new Set(["ocr", "saveScript", "scriptRun", "scriptLog"]);
 
 // Surfaces the scripting layer asks for by key. The dialog text is here,
 // not in the request.
@@ -448,6 +449,14 @@ export class Broker {
       const languages = Array.isArray(raw.languages) ? raw.languages.slice(0, 8).filter((l) => typeof l === "string" && LANGUAGE.test(l)) : [];
       const { recognizeText } = await import("./ocr.mjs");
       return recognizeText(Buffer.from(image.data, "base64"), { languages });
+    }
+    if (method === "scriptLog") {
+      // ui.log: the runner already checked this, but it is not trusted.
+      if (raw.data === null || typeof raw.data !== "object" || Array.isArray(raw.data)) throw coded("Refused: ui.log takes a plain object", "bad_request");
+      const full = scriptLogData(raw.data, true);
+      if (Buffer.byteLength(JSON.stringify(full)) > LOG_LIMIT) throw coded(`Refused: ui.log entry over ${LOG_LIMIT} bytes`, "bad_request");
+      this.#log({ source: "script", data: scriptLogData(raw.data, Boolean(cell.config.log?.text)) });
+      return {};
     }
     if (typeof raw.name !== "string" || !SCRIPT_NAME.test(raw.name)) throw coded("Refused: bad script name", "bad_request");
     if (method === "scriptRun") {
