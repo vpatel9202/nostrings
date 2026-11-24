@@ -51,7 +51,7 @@
     "node": ">=20.10"
   },
   "scripts": {
-    "test": "node --test test/unit.test.mjs",
+    "test": "node --test test/unit.test.mjs test/bench.test.mjs",
     "build:helper": "node bin/nostrings.mjs setup --rebuild",
     "build:android": "sh native/android/build.sh",
     "smoke": "node bin/nostrings.mjs smoke",

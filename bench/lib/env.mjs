@@ -140,6 +140,56 @@ export function closeOracle() {
   oracle = null;
 }
 
+// ---- Android -----------------------------------------------------------------
+// Android tasks run on one device or emulator, named with --android-serial.
+// The fixture app is the one `npm run build:android` produces.
+export const androidConfig = { serial: null };
+export const ANDROID_PACKAGE = "com.nostrings.fixture";
+
+async function androidBackend() {
+  return import("../../src/backends/android.mjs");
+}
+
+// Installs the fixture and stops it, so each run starts from its first screen.
+export async function resetAndroidFixture() {
+  const { FIXTURE_APK, resolveSerial, adb } = await androidBackend();
+  if (!androidConfig.serial) throw new Error("Android tasks need --android-serial (for example emulator-5554)");
+  if (!fs.existsSync(FIXTURE_APK)) throw new Error("fixture app not built; run npm run build:android");
+  const serial = await resolveSerial(androidConfig.serial);
+  await adb(["-s", serial, "install", "-r", "--user", "0", FIXTURE_APK], { timeout: 120_000 });
+  await adb(["-s", serial, "shell", "am", "force-stop", ANDROID_PACKAGE]);
+  await adb(["-s", serial, "shell", "input", "keyevent", "KEYCODE_WAKEUP"]).catch(() => {});
+}
+
+export async function stopAndroidFixture() {
+  const { resolveSerial, adb } = await androidBackend();
+  const serial = await resolveSerial(androidConfig.serial).catch(() => null);
+  if (serial) await adb(["-s", serial, "shell", "am", "force-stop", ANDROID_PACKAGE]).catch(() => {});
+}
+
+// Reads the fixture's labels through a short-lived nostrings session of the
+// harness's own, never the model's. The phone allows one automation
+// connection, so the model's tool server is closed before verify for Android
+// tasks (`verifyAfterClose`), and this session is closed after the read.
+export async function androidLabels() {
+  const saved = process.env.NOSTRINGS_APPROVAL;
+  process.env.NOSTRINGS_APPROVAL = "allow-all";
+  const session = new Session({ client: "nostrings bench oracle (android)" });
+  try {
+    const result = await session.run(
+      `const __p = ui.device(${JSON.stringify(androidConfig.serial)}); const __f = await __p.getApp(${JSON.stringify(ANDROID_PACKAGE)}); await __f.getAXState({emit: false, disableDiffing: true});`,
+      { timeoutMs: 60_000 },
+    );
+    const text = result.content.map((c) => c.text ?? "").join("\n");
+    if (!result.ok) throw new Error(text.split("\n").at(-1));
+    return text;
+  } finally {
+    session.close();
+    if (saved == null) delete process.env.NOSTRINGS_APPROVAL;
+    else process.env.NOSTRINGS_APPROVAL = saved;
+  }
+}
+
 export function readJsonLines(file) {
   if (!fs.existsSync(file)) return [];
   return fs
