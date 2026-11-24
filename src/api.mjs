@@ -44,16 +44,20 @@ function area(w) {
   return w.frame[2] * w.frame[3];
 }
 
-// Default read and click target: the focused window if it is a normal one (a
-// new document or settings window), else the window last used, else the main
-// window, else the largest normal one. Small focused windows never win, so a
-// tooltip or field editor can't take over the reads.
+// Default read and click target: the focused window if it is a normal one
+// that just opened (a new document or settings window), else the window last
+// used, else the main window, else the largest normal one. An existing window
+// that took focus (the user clicked it, or a DevTools window came forward)
+// does not take over: indices from the last read belong to the window last
+// used. `last.known` is the window ids seen at the last read. Small focused
+// windows never win, so a tooltip or field editor can't take over the reads.
 export function pickWindow(windows, last) {
   const sticky = last?.windowId != null ? windows.find((w) => w.windowId === last.windowId) : undefined;
   if (last?.explicit && sticky) return sticky;
   const largest = [...windows].sort((a, b) => area(b) - area(a));
+  const isNew = (w) => !sticky || !last?.known || !last.known.has(w.windowId);
   return (
-    windows.find((w) => w.focused && isNormalWindow(w)) ??
+    windows.find((w) => w.focused && isNormalWindow(w) && isNew(w)) ??
     sticky ??
     windows.find((w) => w.main && isNormalWindow(w)) ??
     largest.find(isNormalWindow) ??
@@ -83,6 +87,24 @@ export function ocrDiff(head, before, after) {
   const same = after.length - added.length;
   const tail = [same && `${same} unchanged not shown`, gone && `${gone} gone`].filter(Boolean).join(", ");
   return `${head} — changes since last OCR (+ new or moved${tail ? `; ${tail}` : ""}; {disableDiffing: true} prints all):\n${added.map((l) => `+ ${l}`).join("\n")}`;
+}
+
+// Finds the window a `window` option names: an index from app.windows()
+// (indices follow the stacking order, so they change when focus does), a
+// title (text it contains, any case, or a RegExp), or {id} (its windowId).
+const isRegExp = (v) => Object.prototype.toString.call(v) === "[object RegExp]";
+
+export function findWindow(windows, window) {
+  if (Number.isInteger(window)) return windows.find((w) => w.index === window);
+  // Cells run in their own vm context, so their RegExp is not this realm's.
+  if (isRegExp(window)) return windows.find((w) => window.test(w.title ?? ""));
+  if (typeof window === "string") {
+    const q = window.toLowerCase();
+    return windows.find((w) => (w.title ?? "") === window) ?? windows.find((w) => (w.title ?? "").toLowerCase().includes(q));
+  }
+  const id = window?.id ?? window?.windowId;
+  if (id != null) return windows.find((w) => w.windowId === id);
+  throw new TypeError("window must be an index, a title, a RegExp, or {id}");
 }
 
 export class App {
@@ -206,12 +228,16 @@ export class App {
       this.#knownWindows = new Map();
       return next;
     }
+    const known = this.#knownWindows && new Set(this.#knownWindows.keys());
     this.#noteWindows(windows);
     const pick =
       window != null
-        ? windows.find((w) => w.index === window)
-        : pickWindow(windows, this.#view && { windowId: this.#view.windowId, explicit: this.#explicitWindow });
-    if (!pick) throw new Error(`${this.name} has no window ${window}`);
+        ? findWindow(windows, window)
+        : pickWindow(windows, this.#view && { windowId: this.#view.windowId, explicit: this.#explicitWindow, known });
+    if (!pick) {
+      const list = windows.map((w) => `${w.index} ${JSON.stringify(w.title)}`).join(", ");
+      throw new Error(`${this.name} has no window ${isRegExp(window) ? window : JSON.stringify(window)} (windows: ${list})`);
+    }
     if (window != null) this.#explicitWindow = true;
     else if (pick.windowId !== this.#view?.windowId) this.#explicitWindow = false;
     const next = viewFor(pick, this.#ctx.config.screenshot);
@@ -224,8 +250,8 @@ export class App {
     return next;
   }
 
-  async #ensureView() {
-    return this.#refreshView(undefined);
+  async #ensureView(window) {
+    return this.#refreshView(window);
   }
 
   // One line, shown on the next read, when windows opened or closed since the
@@ -574,9 +600,9 @@ export class App {
     throw new Error(`Could not bring ${this.name} to the front`);
   }
 
-  async #screenPoint(target) {
+  async #screenPoint(target, window) {
     if (isPoint(target)) {
-      const view = await this.#ensureView();
+      const view = await this.#ensureView(window);
       const [x, y] = target;
       // A point outside the window would land in whatever app is underneath.
       if (x < 0 || y < 0 || x >= view.width || y >= view.height) {
@@ -596,7 +622,7 @@ export class App {
     const modList = [].concat(modifiers);
     const mods = modList.length ? parseKeys(`${modList.join("+")}+a`)[0].mods : [];
     return this.#act("click", { target: describeTarget(target), button, count }, async () => {
-      const [x, y] = await this.#screenPoint(target);
+      const [x, y] = await this.#screenPoint(target, options.window);
       const hit = await this.#call("hitTest", { x, y }).catch(() => null);
       const onMenu = hit?.role === "AXMenuItem";
       // A plain click on a pressable element: press it through accessibility,
@@ -661,7 +687,7 @@ export class App {
   // app is brought forward instead and `lastRoute` says so.
   async #deliver(method, params, options = {}) {
     if (this.#useBackground(options)) {
-      const view = await this.#ensureView();
+      const view = await this.#ensureView(options.window);
       if (view.windowId != null) {
         try {
           const result = await this.#call(method, { ...params, mode: "background", windowId: view.windowId });
@@ -733,7 +759,7 @@ export class App {
   async scroll(target, amount = 3, options = {}) {
     const { dy, dx } = typeof amount === "number" ? { dy: amount, dx: options.dx ?? 0 } : { dy: 0, dx: 0, ...amount };
     return this.#act("scroll", { target: describeTarget(target), dy, dx }, async () => {
-      const [x, y] = await this.#screenPoint(target);
+      const [x, y] = await this.#screenPoint(target, options.window);
       await this.#pointCursor([x, y]);
       await this.#deliver("scroll", { x, y, dy, dx }, options);
     });

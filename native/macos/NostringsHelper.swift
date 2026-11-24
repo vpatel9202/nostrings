@@ -323,6 +323,25 @@ func cgWindowID(pid: Int, frame: CGRect) -> Int? {
     return nil
 }
 
+// The CGWindowID of an Accessibility window. Accessibility knows it
+// (_AXUIElementGetWindow); matching by frame alone gives two windows with the
+// same frame (an undocked DevTools window opened over its page, stacked
+// document windows) the same id, so input and screenshots hit the wrong one.
+// The id must be one of the app's normal windows; else match by frame.
+typealias AXGetWindow = @convention(c) (AXUIElement, UnsafeMutablePointer<UInt32>) -> AXError
+let axGetWindow: AXGetWindow? = dlsym(UnsafeMutableRawPointer(bitPattern: -2), "_AXUIElementGetWindow").map { unsafeBitCast($0, to: AXGetWindow.self) }
+
+func cgWindowID(pid: Int, window: AXUIElement) -> Int? {
+    if let get = axGetWindow {
+        var id: UInt32 = 0
+        if get(window, &id) == .success, id != 0,
+           cgWindows(pid: pid).contains(where: { ($0[kCGWindowNumber as String] as? Int) == Int(id) }) {
+            return Int(id)
+        }
+    }
+    return axFrame(window).flatMap { cgWindowID(pid: pid, frame: $0) }
+}
+
 func backingScale(for frame: CGRect) -> Double {
     // NSScreen frames are bottom-left origin; convert the window's center.
     guard let primary = NSScreen.screens.first else { return 2 }
@@ -355,7 +374,7 @@ func windowsInfo(_ pid: Int) -> [[String: Any]] {
             "main": main.map { CFEqual($0, w) } ?? false,
         ]
         if let role: String = axAttr(w, kAXSubroleAttribute) { info["subrole"] = role }
-        if let id = cgWindowID(pid: pid, frame: frame) { info["windowId"] = id }
+        if let id = cgWindowID(pid: pid, window: w) { info["windowId"] = id }
         out.append(info)
     }
     return out
@@ -365,7 +384,7 @@ func windowsInfo(_ pid: Int) -> [[String: Any]] {
 // does not list: on another Space, such as a full-screen window whose Space
 // is not showing.
 func otherSpaceWindows(_ pid: Int) -> [[String: Any]] {
-    let listed = Set(axWindows(pid).compactMap { w in axFrame(w).flatMap { cgWindowID(pid: pid, frame: $0) } })
+    let listed = Set(axWindows(pid).compactMap { cgWindowID(pid: pid, window: $0) })
     return cgWindows(pid: pid).compactMap { w in
         guard let id = w[kCGWindowNumber as String] as? Int, !listed.contains(id),
               (w[kCGWindowIsOnscreen as String] as? Bool) != true,
@@ -497,7 +516,7 @@ func axTree(_ params: [String: Any]) throws -> [String: Any] {
         "frame": rectJSON(frame),
         "scale": backingScale(for: frame),
     ]
-    if let id = cgWindowID(pid: pid, frame: frame) { windowInfo["windowId"] = id }
+    if let id = cgWindowID(pid: pid, window: window) { windowInfo["windowId"] = id }
     return ["window": windowInfo, "nodes": nodes, "truncated": truncated]
 }
 
@@ -982,8 +1001,8 @@ func bundleUsesChromium(_ pid: pid_t) -> Bool {
 // The CGWindowID of the app's key window as Accessibility reports it.
 func keyWindowId(_ pid: pid_t) -> UInt32? {
     let app = AXUIElementCreateApplication(pid)
-    guard let window: AXUIElement = axAttr(app, kAXFocusedWindowAttribute), let frame = axFrame(window),
-          let id = cgWindowID(pid: Int(pid), frame: frame) else { return nil }
+    guard let window: AXUIElement = axAttr(app, kAXFocusedWindowAttribute),
+          let id = cgWindowID(pid: Int(pid), window: window) else { return nil }
     return UInt32(id)
 }
 
@@ -1095,9 +1114,10 @@ func focusIsInside(pid: pid_t, windowId: UInt32) -> Bool {
 // The window id of a sheet attached to window `parent`, if one is open.
 func sheetWindowId(pid: pid_t, parent: UInt32) -> UInt32? {
     for w in axWindows(Int(pid)) {
-        guard let frame = axFrame(w), cgWindowID(pid: Int(pid), frame: frame) == Int(parent) else { continue }
+        guard cgWindowID(pid: Int(pid), window: w) == Int(parent) else { continue }
         for child in axChildren(w) where axRole(child) == "AXSheet" {
-            if let f = axFrame(child), let id = cgWindowID(pid: Int(pid), frame: f) { return UInt32(id) }
+            // A sheet's element may report its parent's window; its own frame names it.
+            if let f = axFrame(child), let id = cgWindowID(pid: Int(pid), frame: f), id != Int(parent) { return UInt32(id) }
         }
     }
     return nil

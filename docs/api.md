@@ -43,10 +43,18 @@ await calc.getAXState();
   full tree; later reads print only lines that changed (`~`), were added
   (`+`), or a list of removed indices. `disableDiffing: true` prints the full
   tree. `frames: true` appends `@x,y wxh` in image pixels. `menus: true` adds
-  the menu bar. `window` picks a window index from `app.windows()`.
-  Without `window`, reads and clicks use the focused window if it is a normal
-  one, else the window last used, else the main window; tooltips, popovers,
-  and rename fields never take over. Diffs compare against the last printed
+  the menu bar. `window` picks a window: an index from `app.windows()`, a
+  title (text it contains, any case, or a RegExp such as
+  `/^Developer Tools/`), or `{id}` (its `windowId`). Indices follow the
+  stacking order and change when focus moves between the app's windows, so
+  name a window by title when the app has several. Actions take `window`
+  too; after a read with `window`, later reads and actions stay in that
+  window until another `window` is given.
+  Without `window`, reads and actions use a normal window that just opened
+  and took focus (a dialog, settings, a new document), else the window last
+  used, else the main window; an existing window that comes forward (a
+  DevTools window, one the user clicked) does not take over, and tooltips,
+  popovers, and rename fields never do. Diffs compare against the last printed
   read of the same window; `{emit: false}` reads don't change that.
   `maxNodes` (default 800) and `maxDepth` (default 40) bound the tree; a
   truncated tree says so. A tree over 250 elements (`ax.outlineAbove` in the

@@ -3,7 +3,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import vm from "node:vm";
-import { App, pickWindow } from "../src/api.mjs";
+import { App, findWindow, pickWindow } from "../src/api.mjs";
 import { diffTrees, formatTree } from "../src/axformat.mjs";
 import { toImage, toScreen, viewFor } from "../src/geometry.mjs";
 import { parseChord, parseKeys } from "../src/keys.mjs";
@@ -80,6 +80,31 @@ test("tooltips and field editors never become the default window", () => {
   assert.equal(pickWindow([settings, main], { windowId: 10 }), settings);
   // ...unless the caller picked a window explicitly.
   assert.equal(pickWindow([settings, main], { windowId: 10, explicit: true }), main);
+});
+
+test("an existing window that takes focus does not take over the default", () => {
+  const page = { index: 1, windowId: 10, frame: [0, 0, 900, 500], main: false, focused: false, title: "Page" };
+  const devtools = { index: 0, windowId: 11, frame: [0, 0, 900, 500], main: true, focused: true, title: "Developer Tools — Page" };
+  // DevTools was already open at the last read: keep working in the page.
+  assert.equal(pickWindow([devtools, page], { windowId: 10, known: new Set([10, 11]) }), page);
+  // DevTools just opened: follow it.
+  assert.equal(pickWindow([devtools, page], { windowId: 10, known: new Set([10]) }), devtools);
+});
+
+test("a window option names an index, a title, a RegExp, or an id", () => {
+  const windows = [
+    { index: 0, windowId: 11, title: "Developer Tools — Page" },
+    { index: 1, windowId: 10, title: "Page" },
+  ];
+  assert.equal(findWindow(windows, 1), windows[1]);
+  assert.equal(findWindow(windows, "Page"), windows[1]);
+  assert.equal(findWindow(windows, "developer tools"), windows[0]);
+  assert.equal(findWindow(windows, /^Developer/), windows[0]);
+  // A RegExp from a cell's vm context.
+  assert.equal(findWindow(windows, vm.runInNewContext("/^Developer/")), windows[0]);
+  assert.equal(findWindow(windows, { id: 10 }), windows[1]);
+  assert.equal(findWindow(windows, "Nope"), undefined);
+  assert.throws(() => findWindow(windows, true), TypeError);
 });
 
 // An App over a fake backend whose tree the test can change between reads.
