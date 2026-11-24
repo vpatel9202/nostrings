@@ -30,6 +30,12 @@ await calc.getAXState();
 - `ui.sleep(ms)` waits. Also available as `sleep(ms)`.
 - `ui.permissions()` reports Accessibility and Screen Recording status.
 - `help(topic)` prints this document, or the sections mentioning `topic`.
+- `ui.log(obj)` appends `{source: "script", data: obj}` to the action log
+  (`~/.nostrings/actions.log`, one JSON line, with the usual `ts`, `client`
+  and `step`), for telemetry from a script; nothing is printed. `obj` must be
+  plain JSON data (no functions or cycles) of at most 8 KB serialized, or it
+  throws. Like typed text, strings are logged as `[N chars]` unless
+  `log.text` is on in the config; numbers, booleans and keys are kept.
 - `console.log(...)` and `nodeRepl.write(value)` add text to the result. The
   value of the last expression is added too, unless a read already printed it.
 

@@ -29,6 +29,15 @@ Nothing in the smoke test is mocked.
   `pressKey("super+shift+p")` opened VS Code's Command Palette in the
   background through its menu. `ui.spotlight("Chess")` opened Chess twice.
 
+- 2026-11-24, after the cell realm was hardened (no `fetch`, `Buffer`, `URL`
+  or string `eval` in cells): `nostrings smoke` passed 7 of 7 and `smoke --macos`
+  51 of 51. `nostrings init` from a reset state (`tccutil reset Accessibility`;
+  Screen Recording needed `sudo tccutil reset ScreenCapture`) showed the
+  Accessibility prompt, then a Screen Recording prompt, one at a time; Quit &
+  Reopen was declined; `smoke --macos` passed 51 of 51 right after. The saved
+  scripts `calc` (`expr=12*34` gave 408) and `textedit-note` ran; TextEdit
+  autocorrected "nostrings" to "No strings" (beads `ns-2h2`).
+
 The Grok, OpenCode, and Codex configs in `agents.md` follow each client's
 documented MCP format but have not been exercised end to end yet.
 

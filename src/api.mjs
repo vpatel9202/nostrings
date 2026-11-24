@@ -605,8 +605,8 @@ export class App {
     this.#activatedCell = this.#ctx.cell;
   }
 
-  // Name of the app in front, from the ungated listApps (macOS reports
-  // `active` per app). Best effort: undefined when the backend does not say.
+  // Name of the app in front, from the ungated listApps (macOS and Android
+  // report `active` per app). Best effort: undefined when the backend does not say.
   async #frontmostName() {
     try {
       const front = (await this.#backend.request("listApps")).find((a) => a.running !== false && a.active);
@@ -1444,6 +1444,35 @@ function matcher(query) {
     ["focused", "selected", "disabled", "settable"].every((f) => q[f] == null || Boolean(n[f]) === q[f]);
 }
 
+const LOG_LIMIT = 8192;
+
+// ui.log(obj): checks `obj` is plain JSON data (any realm: cells run in a vm
+// context) and returns a copy, with strings reduced to their length unless
+// config.log.text is on, like typed text in the action log.
+function scriptLogData(value, keepText, seen = new Set(), depth = 0) {
+  if (depth > 20) throw new Error("ui.log: object is nested deeper than 20 levels");
+  if (value === null || typeof value === "boolean") return value;
+  if (typeof value === "number") {
+    if (!Number.isFinite(value)) throw new Error("ui.log: numbers must be finite");
+    return value;
+  }
+  if (typeof value === "string") return keepText ? value : `[${value.length} chars]`;
+  if (typeof value !== "object") throw new Error(`ui.log: ${typeof value} values cannot be logged (plain JSON data only)`);
+  if (seen.has(value)) throw new Error("ui.log: object contains a cycle");
+  const proto = Object.getPrototypeOf(value);
+  const isArray = Array.isArray(value);
+  if (!isArray && proto !== null && Object.getPrototypeOf(proto) !== null) throw new Error("ui.log: only plain objects and arrays can be logged");
+  seen.add(value);
+  try {
+    if (isArray) return Array.from(value, (v) => scriptLogData(v === undefined ? null : v, keepText, seen, depth + 1));
+    const copy = {};
+    for (const [key, v] of Object.entries(value)) if (v !== undefined) copy[key] = scriptLogData(v, keepText, seen, depth + 1);
+    return copy;
+  } finally {
+    seen.delete(value);
+  }
+}
+
 export function createApi(ctx) {
   const ui = {
     ...appSurface(ctx, ctx.backend),
@@ -1503,6 +1532,16 @@ export function createApi(ctx) {
     },
 
     ...macSystem(ctx, () => ui),
+
+    // Appends `obj` to the action log as {source: "script", data: obj}, for
+    // telemetry from a script. Prints nothing.
+    log(obj) {
+      if (obj === null || typeof obj !== "object" || Array.isArray(obj)) throw new Error("ui.log(obj) takes a plain object");
+      const data = scriptLogData(obj, Boolean(ctx.config.log.text));
+      const size = Buffer.byteLength(JSON.stringify(scriptLogData(obj, true)));
+      if (size > LOG_LIMIT) throw new Error(`ui.log: ${size} bytes serialized; the limit is ${LOG_LIMIT}`);
+      ctx.log({ source: "script", data });
+    },
 
     help(topic) {
       const text = ctx.help(topic);

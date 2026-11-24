@@ -496,6 +496,25 @@ test("saved scripts: names are checked, the first line describes, args parse", a
   }
 });
 
+test("ui.log writes one tagged entry, redacts strings, rejects bad values", async () => {
+  const { createApi } = await import("../src/api.mjs");
+  const lines = [];
+  const config = { log: { enabled: true, text: false } };
+  const ui = createApi({ backend: {}, config, log: (entry) => lines.push(entry), out: { text() {} }, help: () => "" });
+  const cell = (code) => vm.runInNewContext(code, { ui });
+  assert.equal(cell('ui.log({a: 1, ok: true, name: "secret", nested: {n: [1, "x"]}})'), undefined);
+  assert.deepEqual(lines[0], { source: "script", data: { a: 1, ok: true, name: "[6 chars]", nested: { n: [1, "[1 chars]"] } } });
+  config.log.text = true;
+  cell('ui.log({ts: "evil", source: "x", s: "hi"})');
+  assert.deepEqual(lines[1], { source: "script", data: { ts: "evil", source: "x", s: "hi" } });
+  assert.throws(() => cell("ui.log({f() {}})"), /function/);
+  assert.throws(() => cell("const o = {}; o.o = o; ui.log(o)"), /cycle/);
+  assert.throws(() => cell('ui.log({big: "x".repeat(9000)})'), /limit is 8192/);
+  assert.throws(() => cell("ui.log([1])"), /plain object/);
+  assert.throws(() => cell("ui.log({d: new Date()})"), /plain objects/);
+  assert.equal(lines.length, 2);
+});
+
 test("conformance: the reference fake backend passes every check", async () => {
   const { commandBackend, runConformance } = await import("../src/conformance.mjs");
   const pathm = await import("node:path");

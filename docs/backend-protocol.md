@@ -31,7 +31,7 @@ own state are not gated: `hello`, `ping`, `permissions`, `listApps`,
 | `hello` | `client` (name shown in dialogs and the menu) | `{version, platform, pid}` |
 | `ping` | | `{version, platform, pid, background}` |
 | `permissions` | `ask?` (`accessibility`, `screenRecording` or `inputMonitoring`) | `{accessibility, screenRecording, escapeWatcher, inputMonitoring}` |
-| `listApps` | | `[{name, bundleId, pid?, path?, running, active?}]` |
+| `listApps` | | `[{name, bundleId, pid?, path?, running, active?}]`; `active` marks the app in front on the screen the user sees (Android: the top task's package on the phone's own display 0, never a hidden session display) |
 | `resolveApp` | `query` (name, bundle id, `pid:N`, path) | one app |
 | `launch` | `bundleId`, `path`, `name`, `activate` | the running app |
 | `activate` | `pid` | |
