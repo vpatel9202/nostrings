@@ -16,5 +16,6 @@
         <activity android:name=".Code" android:exported="false" />
         <activity android:name=".Web" android:exported="false" />
         <activity android:name=".Gesture" android:exported="false" />
+        <activity android:name=".Escape" android:exported="false" />
     </application>
 </manifest>

@@ -183,6 +183,9 @@ the fixture's approval skipped (ask-first apps and a locked phone still ask):
 11. `js_reset` drops the binding.
 12. `getApp(..., {foreground: true})` taps the fixture on the phone's own
     screen (it shows there for a moment, then `Back`).
+13. On the hidden screen: the fixture's "Open on phone screen" button opens a
+    second activity on display 0, and the next read raises
+    `moved_to_phone_screen`.
 
 Failure details print only the fixture's labels and error codes, never other
 screen content. On an emulator, the phone's screen is first set to a static
@@ -264,6 +267,34 @@ and pinch and rotate) passes on API 34, 35, 36 and 37. The run found:
 - On API 37 (the Play Store image) the "phone's screen did not change"
   check failed in two runs out of three; when it fails, the smoke now
   reports the changed region.
+
+### Emulator run, 2026-11-24
+
+On the `gb_api36` emulator (API 36, serial `emulator-5554`, booted with
+`-no-snapshot-save -no-audio -no-boot-anim`), after the cell realm was
+hardened (no `fetch`, `Buffer`, `URL` or `eval` in cells):
+- Baseline `smoke --android` passed all 20 checks unchanged.
+- New check 21: the fixture's "Open on phone screen" button (the `Escape`
+  activity) starts a second activity on display 0 with
+  `ActivityOptions.setLaunchDisplayId(0)` while its main activity stays on the
+  hidden screen. The next read now raises `moved_to_phone_screen`. Before, the
+  error fired only when the hidden screen was empty; `appWindows` now also
+  checks the phone's screen when the app's windows are still on the hidden one
+  (`checkMoved`). `app.activate()` on the same app accepts what is on the
+  phone's screen and clears the error (written, not run). With the check
+  added, `smoke --android` passes all 21 checks.
+- Two things the new check had to work around: a handle opened earlier with
+  `{foreground: true}` stays on the phone's screen for the session, so the step
+  asks for `{foreground: false}`; and it force-stops the fixture before and after.
+- `nostrings script notifications-digest serial=emulator-5554` printed three
+  phone notifications (Digital Wellbeing, and two from Android System) and
+  `{ mac: 0, phone: 3 }`. `nostrings script phone-open serial=emulator-5554
+  url=https://example.com` opened Chrome, which showed its first-run screen
+  ("Make Chrome your own", Add account to device / Use without an account)
+  and returned `Chrome`; the page itself was not reached. Both ran through a
+  daemon that may have been started from another checkout. The `Chrome` app was
+  force-stopped afterward.
+- `npm test`: 27 passed.
 
 ## macOS capability test
 

@@ -558,7 +558,12 @@ final class Device {
         if (d != DEFAULT_DISPLAY) {
             alreadyHere = onHidden(pkg, d);
             // Already open there: nothing to do (a second launch would add a task).
-            if (alreadyHere && intentSpec == null) return screenInfo(d);
+            if (alreadyHere && intentSpec == null) {
+                // An activate after moved_to_phone_screen accepts what is on the phone's screen now.
+                Hidden h = hiddenById(d);
+                if (h != null) h.onPhoneAtStart = onPhone(pkg);
+                return screenInfo(d);
+            }
         }
         if (d != DEFAULT_DISPLAY && !alreadyHere) {
             refuseSecondCopy(pkg);
@@ -837,16 +842,11 @@ final class Device {
             }
         }
         if (appIndex < 0 && d != DEFAULT_DISPLAY) {
-            Hidden h = hiddenById(d);
-            // Moved: on the phone's screen now, and not already there when
-            // nostrings opened it (the user's own copy does not count).
-            if (h != null && !h.onPhoneAtStart && onPhone(pkg)) {
-                throw new Server.Coded("moved_to_phone_screen", pkg + " is showing on the phone's own screen, not on nostrings's hidden screen"
-                        + " (it may have opened a sign-in or system screen there). nostrings stopped rather than follow it; check the phone,"
-                        + " then call app.activate() to start again on the hidden screen.");
-            }
+            checkMoved(pkg, d);
             throw new Server.Coded("not_visible", pkg + " has closed on its hidden screen. Call app.activate() to open it again.");
         }
+        // Its main screen is still hidden, but a second one opened on the phone's own screen.
+        if (d != DEFAULT_DISPLAY) checkMoved(pkg, d);
         if (appIndex < 0) {
             throw new Server.Coded("not_visible", pkg + " is not on the screen. Bring it forward with app.activate(), then read again.");
         }
@@ -858,6 +858,18 @@ final class Device {
             shown.add(w);
         }
         return shown;
+    }
+
+    // Moved: on the phone's screen now, and not already there when nostrings
+    // opened it (the user's own copy does not count). True whether or not the
+    // app's main screen is still on the hidden screen.
+    private void checkMoved(String pkg, int d) {
+        Hidden h = hiddenById(d);
+        if (h != null && !h.onPhoneAtStart && onPhone(pkg)) {
+            throw new Server.Coded("moved_to_phone_screen", pkg + " is showing on the phone's own screen, not on nostrings's hidden screen"
+                    + " (it may have opened a sign-in or system screen there). nostrings stopped rather than follow it; check the phone,"
+                    + " then call app.activate() to start again on the hidden screen.");
+        }
     }
 
     private static boolean isBar(AccessibilityWindowInfo w, Point size) {

@@ -80,6 +80,12 @@ public class Main extends Activity {
         gestureScreen.setOnClickListener(v -> startActivity(new android.content.Intent(this, Gesture.class)));
         root.addView(gestureScreen);
 
+        Button escapeButton = new Button(this);
+        escapeButton.setText("Open on phone screen");
+        escapeButton.setAllCaps(false);
+        escapeButton.setOnClickListener(v -> Escape.open(this));
+        root.addView(escapeButton);
+
         SeekBar slider = new SeekBar(this);
         slider.setMax(100);
         slider.setContentDescription("Slider");
