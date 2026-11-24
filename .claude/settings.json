@@ -9,6 +9,16 @@
           }
         ],
         "matcher": ""
+      },
+      {
+        "hooks": [
+          {
+            "command": "node \"$CLAUDE_PROJECT_DIR/scripts/import-approved.mjs\"",
+            "type": "command",
+            "timeout": 120
+          }
+        ],
+        "matcher": "startup"
       }
     ]
   }
