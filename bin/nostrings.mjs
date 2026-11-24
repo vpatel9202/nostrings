@@ -80,6 +80,20 @@ async function doctor() {
   };
   const [major, minor] = process.versions.node.split(".").map(Number);
   check(major > 20 || (major === 20 && minor >= 10), `Node ${process.versions.node} (need 20.10+)`);
+  {
+    // Start a real script runner, the way a session does, and report what it
+    // can reach. Warnings do not fail doctor: sessions still run, less isolated.
+    const { startRunner, describeIsolation } = await import("../src/isolation.mjs");
+    try {
+      const runner = await startRunner();
+      runner.child.kill("SIGKILL");
+      const iso = runner.isolation;
+      lines.push(`${iso.warnings.length ? "warn" : "ok  "}  Script runner: ${describeIsolation(iso)}`);
+      for (const warning of iso.warnings) lines.push(`      ${warning}`);
+    } catch (error) {
+      check(false, "Script runner starts", error.message);
+    }
+  }
   let config;
   try {
     config = loadConfig();

@@ -5,12 +5,8 @@
 // default; pass {emit: false} to only get the return value.
 import { diffTrees, formatTree, nodeRecord, outlineTree } from "./axformat.mjs";
 import { center, toImage, toScreen, viewFor } from "./geometry.mjs";
-import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { promisify } from "node:util";
 import { parseKeys } from "./keys.mjs";
-
-const execFileAsync = promisify(execFile);
 
 // Roles where pressing through accessibility is the same as a click and
 // works without bringing the app to the front.
@@ -25,6 +21,14 @@ const PRESSABLE = new Set([
   "AXPopUpButton",
   "AXMenuButton",
 ]);
+
+// OCR of a capture: by the host when ctx offers it (the session runner has
+// no processes of its own), else here.
+async function recognize(ctx, shot, options) {
+  if (ctx.ocr) return ctx.ocr(shot, { languages: options.languages });
+  const { recognizeText } = await import("./ocr.mjs");
+  return recognizeText(Buffer.from(shot.data, "base64"), { languages: options.languages });
+}
 
 function isPoint(value) {
   return Array.isArray(value) && value.length === 2 && value.every(Number.isFinite);
@@ -567,9 +571,8 @@ export class App {
   // click space) and prints one line per text unless {emit: false}.
   // `languages` (e.g. ["de-DE"]) helps text that is not English.
   async ocr(options = {}) {
-    const { recognizeText } = await import("./ocr.mjs");
     const shot = await this.getScreenshot({ window: options.window, format: "png", emit: false });
-    const found = await recognizeText(Buffer.from(shot.data, "base64"), { languages: options.languages });
+    const found = await recognize(this.#ctx, shot, options);
     // A screenshot can come back larger than the view; map to the view's pixels.
     const sx = this.#view.width / shot.width, sy = this.#view.height / shot.height;
     const items = found.map((t) => ({ text: t.text, confidence: Math.round(t.confidence * 100) / 100, frame: [t.frame[0] * sx, t.frame[1] * sy, t.frame[2] * sx, t.frame[3] * sy].map(Math.round) }));
@@ -660,7 +663,9 @@ export class App {
     } catch (error) {
       if (error.code !== "activate_failed" || !this.bundleId || this.platform !== "macos" || process.platform !== "darwin") throw error;
     }
-    await execFileAsync("open", ["-b", this.bundleId]);
+    // The host runs `open -b` (scripts cannot start processes), and only for
+    // an app already approved in this session.
+    await this.#backend.request("_bringForward", { pid: this.pid });
     for (let i = 0; i < 40; i++) {
       if ((await this.#call("isActive")).active) return;
       await new Promise((r) => setTimeout(r, 100));
@@ -1297,9 +1302,8 @@ function macSystem(ctx, gbRef) {
     // image pixels, plus `screen` [x, y] in global points for each.
     async ocr(options = {}) {
       mac();
-      const { recognizeText } = await import("./ocr.mjs");
       const shot = await gbRef().screenshot({ ...options, format: "png", emit: false });
-      const found = await recognizeText(Buffer.from(shot.data, "base64"), { languages: options.languages });
+      const found = await recognize(ctx, shot, options);
       const v = shot.view;
       const items = found.map((t) => {
         const frame = t.frame.map(Math.round);
@@ -1487,12 +1491,12 @@ function matcher(query) {
     ["focused", "selected", "disabled", "settable"].every((f) => q[f] == null || Boolean(n[f]) === q[f]);
 }
 
-const LOG_LIMIT = 8192;
+export const LOG_LIMIT = 8192;
 
 // ui.log(obj): checks `obj` is plain JSON data (any realm: cells run in a vm
 // context) and returns a copy, with strings reduced to their length unless
 // config.log.text is on, like typed text in the action log.
-function scriptLogData(value, keepText, seen = new Set(), depth = 0) {
+export function scriptLogData(value, keepText, seen = new Set(), depth = 0) {
   if (depth > 20) throw new Error("ui.log: object is nested deeper than 20 levels");
   if (value === null || typeof value === "boolean") return value;
   if (typeof value === "number") {

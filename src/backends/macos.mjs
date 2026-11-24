@@ -61,7 +61,16 @@ export class MacBackend extends EventEmitter {
       while ((newline = buffer.indexOf("\n")) >= 0) {
         const line = buffer.slice(0, newline);
         buffer = buffer.slice(newline + 1);
-        if (line) this.#onMessage(JSON.parse(line));
+        if (!line) continue;
+        // This runs inside the MCP server or CLI daemon now; a bad line must
+        // not take that process down.
+        let message;
+        try {
+          message = JSON.parse(line);
+        } catch {
+          continue;
+        }
+        this.#onMessage(message);
       }
     });
     socket.on("close", () => {

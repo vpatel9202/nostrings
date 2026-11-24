@@ -57,6 +57,9 @@ export const DEFAULTS = {
   log: { enabled: true, text: false },
   daemon: { idleMinutes: 60 },
   timeoutMs: 120_000,
+  // strict: on macOS, scripts run only inside the Seatbelt sandbox.
+  // best-effort: run with whatever isolation this host allows, and warn.
+  isolation: "strict",
 };
 
 function merge(base, extra) {
@@ -82,6 +85,9 @@ export function readUserConfig() {
 export function loadConfig() {
   const config = merge(DEFAULTS, readUserConfig());
   if (process.env.NOSTRINGS_APPROVAL) config.approval = process.env.NOSTRINGS_APPROVAL;
+  if (!["strict", "best-effort"].includes(config.isolation)) {
+    throw new Error(`isolation must be strict or best-effort (got ${config.isolation})`);
+  }
   if (!["ask", "allowlist", "allow-all"].includes(config.approval)) {
     throw new Error(`approval must be ask, allowlist, or allow-all (got ${config.approval})`);
   }

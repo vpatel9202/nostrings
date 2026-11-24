@@ -595,7 +595,10 @@ final class Device {
         }
         boolean alreadyHere = false;
         if (d != DEFAULT_DISPLAY) {
-            alreadyHere = onHidden(pkg, d);
+            // Right after the app is killed (force-stop, a crash) its window
+            // can still be listed on the display for a moment; that is not
+            // open, so it needs its process too.
+            alreadyHere = onHidden(pkg, d) && processRunning(pkg);
             // Already open there: nothing to do (a second launch would add a task).
             if (alreadyHere && intentSpec == null) {
                 // An activate after moved_to_phone_screen accepts what is on the phone's screen now.
@@ -790,6 +793,17 @@ final class Device {
             if (w.getType() == AccessibilityWindowInfo.TYPE_APPLICATION) return true;
         }
         return false;
+    }
+
+    // Whether `pkg` has a live process (pidof, which the shell user may run).
+    private boolean processRunning(String pkg) {
+        try {
+            Process proc = new ProcessBuilder("pidof", pkg).redirectErrorStream(true).start();
+            String out = new String(proc.getInputStream().readAllBytes()).trim();
+            return proc.waitFor() == 0 && !out.isEmpty();
+        } catch (Throwable error) {
+            return true; // cannot tell: keep the old behavior
+        }
     }
 
     private boolean onPhone(String pkg) {

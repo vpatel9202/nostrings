@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Android: `activate()` right after the app was killed (force-stop, a crash)
+  no longer takes its leftover window on the hidden screen for an open app
+  and returns an empty screen; it starts the app again.
 - macOS focus guard: after a background action the helper watches for 2.5 s
   and gives focus back once if the target app activated itself (not when the
   user clicked or pressed a modifier); a late restore is reported on the next
@@ -16,6 +19,44 @@
 - `claude -p` with the MCP tool works headless (ns-078); Firefox
   `about:preferences` reads in the background (ns-4zc); background Escape does
   not close Gecko popup menus (documented, ns-wat).
+- Scripts run in their own no-privilege process (`ns-iz9`, fixes `ns-tzn`).
+  A cell that escapes the `vm` context reaches only the runner: no helper or
+  phone connection, an empty environment, and under Node's permission model
+  reads limited to nostrings' `src/`, no file writes, no child processes or
+  workers. On macOS the runner also runs in a deny-default Seatbelt sandbox
+  (no network or Unix sockets, no writes, no fork, no signals to other
+  processes). The host process (MCP server or CLI daemon) now holds the
+  backends and approvals and answers the runner's requests after checking
+  them. Each layer is detected by starting the runner with it; when one
+  cannot apply (`sandbox-exec` inside another sandbox, Node without the
+  permission model, Node before 25 on Linux, where the network cannot be
+  denied) the session's first result and `nostrings doctor` warn.
+- Approval dialog text no longer comes from the script: `approveSurface`
+  takes a key from a fixed table, and `launch` takes the app's path and name
+  from the helper's own lookup of the bundle id (a script could have had one
+  app approved and another launched). Scripts can no longer send `hello` or
+  ask for macOS privacy prompts (`permissions` `ask`).
+- Requests are honored only while a call runs, and after a stop (Escape, a
+  timeout, the user switching away, a phone's server exiting) the host
+  refuses the rest of that call's requests.
+- The action log is written by the host from the requests it forwards. Its
+  `action` is now the backend method (`click`, `type`, `systemKeys`,
+  `screenCapture`, ...) with that request's parameters, in place of the
+  script layer's own names and fields; typed text is still a length unless
+  `log.text` is on.
+- `nostrings doctor` reports the script runner's isolation.
+- On macOS scripts run only inside the Seatbelt sandbox by default: if it
+  cannot apply, the call fails with an error that says why. Set
+  `"isolation": "best-effort"` in `config.json` to run anyway with a warning.
+  Each new runner tries the strongest settings again.
+- The host runs a call's requests one at a time (at most 64 waiting); after
+  Escape or a stop the waiting ones are refused. While an approval dialog for
+  a phone is open, only reads are allowed, and Deny is now that dialog's
+  default button. Repeat counts and durations are clamped, and numbers out of
+  range are refused.
+- A call that was stopped always fails and ends with the reason.
+- Action log entries nest the request's parameters under `params`.
+  Overwriting a saved script is logged as `replaced`.
 
 ## 0.6.0 (2026-11-24)
 

@@ -24,25 +24,46 @@ computer. Treat it with the same care as giving someone remote control.
   that app: system hotkeys (Cmd+Space, Mission Control, screenshots, the app
   switcher, lock screen) and typing while Spotlight's panel is open.
 - **Unanswered dialogs deny.** A dialog nobody answers denies after two
-  minutes, so an unattended agent cannot wait on it forever.
+  minutes, so an unattended agent cannot wait on it forever. In the dialogs
+  nostrings shows for phones, Deny is the default button, and while one is
+  open nostrings refuses every action that is not a read.
 - **Taking over stops a script.** If a script had to bring an app forward and
   you switch away, the script stops instead of taking focus back. A script
   working in the background keeps running while you use other apps, so switching
   apps does not stop it. With the optional Input Monitoring permission, pressing
   Escape stops any script (nostrings marks its own key events, so its own Escapes
-  do not count).
+  do not count): every request the script has not yet sent to the helper or
+  the phone is refused. A request already sent still finishes (see below).
 - **Menu-bar item.** While an agent is connected, Nostrings Helper shows a
   menu-bar item listing each session and its approved apps. Stop Running
   Scripts stops every running script. Revoke Session Approvals clears the
   per-session approvals, so apps must be approved again; it does not touch
   `allow` entries in `config.json`. Quit Nostrings Helper exits the helper; the
   next agent call starts it again.
+- **Scripts run in a separate process with no privileges.** Cells run in a
+  runner process that holds no connection to the helper or a phone and gets
+  an empty environment. Under Node's permission model it can read only
+  nostrings' own `src/` and cannot write files or start processes or workers.
+  On macOS it also runs in a deny-default Seatbelt sandbox (`sandbox-exec`):
+  no network, no Unix sockets (so not the helper's socket, the CLI daemon's,
+  or adb's port 5037), no reads outside nostrings' `src/`, node's own install
+  and the system's libraries, no file writes, no new processes, no signals to
+  other processes. On macOS the sandbox is required: if it cannot apply,
+  scripts do not run (see `isolation` below). Everything a script does is a
+  request to the host process (the MCP server or CLI daemon), which runs them
+  one at a time, accepts only known methods, clamps timing and repeat
+  counts, writes the text of every approval dialog itself, refuses requests
+  between calls and for the rest of a call after a stop, and writes the
+  action log from the requests it forwards. `nostrings doctor` prints which
+  layers applied.
 - **Action log.** `~/.nostrings/actions.log` has one JSON object per action:
   `ts`, `client` (the agent's name), `step` (the call's title, when given),
-  then the action's own fields (`app`, `action`, and for example `target`,
-  `keys`, or `length`), and `route` or `error` (written when the action
-  ends; a late focus restore adds an `action: "focus"` line). Typed text is recorded as a length only, unless you
-  set `"log": {"text": true}`.
+  `app`, `action`, and `params`, that request's parameters (for example
+  `target`, `index`, or `length`), then `route` or `error` (written when the
+  request ends; a late focus restore adds an `action: "focus"` line). The
+  host process writes it, not the script's process, and request parameters
+  cannot overwrite the other fields. Typed text is recorded as a length
+  only, unless you set `"log": {"text": true}`.
 - **Local only.** Nothing is sent over the network. The helper listens on a
   Unix socket that only your user can open.
 
@@ -79,26 +100,60 @@ dialogs, and an agent that could press them would approve itself.
   Use it only when you trust every agent you attach.
 - An approved app is approved for everything in it. Allowing a browser lets
   the agent use every site you are signed in to.
+- One approved Mac app currently reaches beyond itself. Pixel clicks and
+  drags are checked against that app's own window by the scripting layer,
+  which runs in the runner, so a script that escapes `vm` can send a click or
+  drag anywhere on screen through an approved app, and can capture other
+  windows through that app's screenshot request. Moving these checks into
+  Nostrings Helper is tracked; until then, treat approving any app as
+  approving input to the whole screen while that session runs.
+- Escape and stops refuse what a script has not yet sent, but do not cancel a
+  request already in the helper (a long drag, a typed string): it finishes.
+  Cancelling inside the helper is tracked.
 - Background input uses two private macOS (SkyLight) functions, the same
   approach as yabai, cua-driver, and Peekaboo. They are looked up at runtime;
   if a macOS update removes them, nostrings falls back to bringing the app
   forward. They do not bypass any permission: the helper still needs
   Accessibility.
-- Scripts have no `require`, `fs`, or dynamic `import`, and see an empty
-  `process.env`, but that is not a sandbox. Cells run in a Node `vm` context,
-  which is not a security boundary: a script can reach the kernel's real
-  `process` (for example through a built-in's constructor) and run code as
-  you. Cells no longer get `fetch`, `Buffer`, `URL` or string `eval`, which
-  removes the easy paths, but host functions given to cells still reach the host
-  process; a separate low-privilege process is planned. Treat anything that can
-  send a cell as able to run code on your Mac, not only to use approved apps. Isolating the
-  kernel is tracked as beads issue `ns-tzn`. Separately, an approved app can
-  reach whatever that app can reach. Finder is not on the ask-first list, and
-  approving it lets an agent read or change any file Finder can.
+- Cells run in a Node `vm` context, which is not a security boundary: a
+  script can reach the runner's real `process` (for example through a
+  built-in's constructor). The runner process is the boundary, and how strong
+  it is depends on the host:
+  - Node's permission model is best effort. It is new, bypasses have been
+    found and fixed in past releases, and before Node 25 it does not cover the
+    network at all. On macOS, Seatbelt covers what it misses. On Linux with
+    Node 20 to 24 the runner is not network-isolated: a script that escapes
+    `vm` can open network connections and Unix sockets, including adb's port.
+    The same holds on a Mac where Seatbelt could not apply and Node is older
+    than 25; there the script can also talk to Nostrings Helper's socket
+    directly. The helper's own approval gate still holds, but the client name
+    and the wording of the dialog are then the script's.
+  - On macOS, if `sandbox-exec` cannot apply (for example when nostrings
+    itself is started inside another Seatbelt sandbox, as some agent shells
+    are), scripts do not run and the error says why. `"isolation":
+    "best-effort"` in `~/.nostrings/config.json` lets them run anyway with
+    whatever this host allows, and the session's first result and
+    `nostrings doctor` then say what is missing. On Linux it is always best
+    effort, with the same warning. If Node has no permission model, the
+    runner starts without that layer and warns.
+  - Seatbelt lets the runner check whether any path exists (file metadata),
+    and read the system's libraries and node's own install (for Homebrew's
+    node, its `Cellar` and `opt` directories), not your files.
+  - A runner a script has taken over can send any request a script could,
+    while a call runs. Each one is still checked and gated. The check that
+    stops a script when you switch away from an app it brought forward runs
+    in the runner, so a taken-over runner can skip it; Escape and timeouts are
+    enforced by the host process.
+- An approved app is still code execution. The runner limits what a script
+  can do outside the apps you approve, not inside them: a script that drives
+  an approved Terminal, Script Editor or Shortcuts can run anything they can,
+  and an approved app can reach whatever that app can reach. Finder is not on
+  the ask-first list, and approving it lets an agent read or change any file
+  Finder can.
 - nostrings does not screen app or page content for prompt injection. Text an
   agent reads in an approved app can try to steer it.
 - `ui.scripts.save` writes a file in `~/.nostrings/scripts/`, the one place a
-  session can write. A saved script never runs by itself, only when a session
+  session can write (the host process writes it, after checking the name). A saved script never runs by itself, only when a session
   calls `ui.scripts.run` or you run `nostrings script`, and it runs with the
   same approvals as any other script. An agent steered by injected text could
   still save a harmful script for later, so read a script
@@ -114,6 +169,13 @@ dialogs, and an agent that could press them would approve itself.
   privileges over ADB. Anything else on the Mac that can run `adb` (an agent
   with a terminal, for one) can do the same without nostrings, so approve
   terminal access with that in mind.
+- **Approvals are checked on the computer.** The checks below run in the
+  nostrings host process, not on the phone. Where the script runner is not
+  network-isolated (Linux with Node before 25, or a Mac where the Seatbelt
+  sandbox could not apply, with Node before 25), a script that escapes `vm`
+  can reach adb (port 5037) and the phone's broker socket directly, and none
+  of these checks hold. `nostrings doctor` and the session's first result
+  say when the runner is not network-isolated.
 - **Ask first, never forbid.** nostrings asks before acting in apps and screens
   that can move money, read messages or one-time codes, or change the phone's
   settings, even under `allow-all`, and it asks again when one of them shows

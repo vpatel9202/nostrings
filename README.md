@@ -266,9 +266,12 @@ What has been run on real hardware, and how: [docs/testing.md](docs/testing.md).
 ## How it works
 
 ```
-agent ──MCP stdio──▶ nostrings mcp ──▶ kernel (persistent JS session)
-agent ──shell──▶ nostrings run ──▶ daemon ──▶ kernel
-                                                │
+agent ──MCP stdio──▶ nostrings mcp ───────────┐
+agent ──shell──▶ nostrings run ──▶ daemon ────┤
+                                              ▼
+            runner ◀──stdio──▶ broker (backends, approvals, action log)
+   (persistent JS session; no files,            │
+    network, sockets or processes)              │
                        ┌── Unix socket ─────────┴──────── adb ──┐
                        ▼                                        ▼
        Nostrings Helper.app (Swift: AX,       nostrings server on the phone

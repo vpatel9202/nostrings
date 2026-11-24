@@ -47,7 +47,7 @@ saved scripts, agent configs, and the backend contract. The smoke tests drive
 real apps and need the helper's permissions; read
 [docs/testing.md](docs/testing.md) first.
 
-For kernel logs on stderr:
+For the script runner's stderr:
 
 ```bash
 NOSTRINGS_DEBUG=1 nostrings mcp
@@ -56,7 +56,7 @@ NOSTRINGS_DEBUG=1 nostrings mcp
 ## Docs
 
 - `docs/api.md` is served verbatim by `help()` inside agent sessions
-  (`src/kernel.mjs`). It is split on `## ` headings, so keep it terse and keep
+  (the broker reads it, `src/runner.mjs` splits it). It is split on `## ` headings, so keep it terse and keep
   the headings.
 - `docs/design.md` records decisions and their reasons. When you change
   behavior, change the reasons there too.
