@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Android: `activate()` right after the app was killed (force-stop, a crash)
+  no longer takes its leftover window on the hidden screen for an open app
+  and returns an empty screen; it starts the app again.
 - macOS focus guard: after a background action the helper watches for 2.5 s
   and gives focus back once if the target app activated itself (not when the
   user clicked or pressed a modifier); a late restore is reported on the next
