@@ -178,6 +178,7 @@ final class Controller: NSObject, NSApplicationDelegate, NSTextFieldDelegate, NS
         let file = NSMenu(title: "File")
         file.addItem(item("New Window", #selector(newWindow), "n"))
         file.addItem(item("SwiftUI Window", #selector(showSwiftUI)))
+        file.addItem(item("Secondary Window", #selector(secondaryWindow)))
         file.addItem(item("Open…", #selector(openPanel), "o"))
         file.addItem(item("Save…", #selector(savePanel), "s"))
         file.addItem(withTitle: "Close Window", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")
@@ -241,6 +242,24 @@ final class Controller: NSObject, NSApplicationDelegate, NSTextFieldDelegate, NS
         extraWindows.append(w)
         w.orderFront(nil)
         report("window.new", ["title": w.title])
+    }
+
+    // A secondary (utility) window, then, a second later, the app activates
+    // itself, as a report said Firefox did after opening a window. A background
+    // driver must give focus back to the user's app (smoke: focus guard).
+    @objc func secondaryWindow() {
+        let w = NSPanel(contentRect: NSRect(x: 260, y: 260, width: 300, height: 140), styleMask: [.titled, .closable, .utilityWindow], backing: .buffered, defer: false)
+        w.title = "Fixture Secondary"
+        w.isReleasedWhenClosed = false
+        w.hidesOnDeactivate = false
+        w.delegate = self
+        extraWindows.append(w)
+        w.orderFront(nil)
+        report("window.new", ["title": w.title])
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+            NSApp.activate(ignoringOtherApps: true)
+            report("app.activated", ["active": NSApp.isActive])
+        }
     }
 
     @objc func openPanel() {

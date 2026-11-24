@@ -38,6 +38,45 @@ Nothing in the smoke test is mocked.
   scripts `calc` (`expr=12*34` gave 408) and `textedit-note` ran; TextEdit
   autocorrected "nostrings" to "No strings" (beads `ns-2h2`).
 
+- 2026-11-24, macOS 27.0.1, Firefox 160.0.1, beads ns-e8r, ns-4zc, ns-wat,
+  ns-2h2, ns-mlj, ns-078. With TextEdit frontmost and the frontmost app
+  sampled every 50 ms (`lsappinfo`, not an AppKit osascript loop: an
+  `osascript` that loads AppKit and spins a run loop became frontmost itself
+  after about 2 s), each step of the reported Firefox sequence ran alone in a
+  new window: `menu("File > New Window")`, `focus` and `setValue` on the
+  address bar, `pressKey("Return")`, `super+l`, `super+t`, typing a URL,
+  `super+alt+k` (undocked DevTools), AXPress on Console Settings, Escape, a
+  raw click on the page, `window(i).raise()` of a back window, and
+  `app.open(url)`. None changed the frontmost app on the current helper (the
+  report predates matching windows by AX window number). The guard added for
+  late activations was checked on the fixture: without it the fixture made
+  itself frontmost about 1.1 s after its secondary window opened; with it the
+  frontmost app never changed, and the smoke check failed with the guard
+  turned off and passed with it on. The whole Firefox sequence then ran again
+  with TextEdit frontmost throughout and every step reporting a route.
+  `about:preferences#privacy` read in the background with its content
+  (429 elements, the "Find in Settings" field), whether it was typed into the
+  address bar or opened with `app.open` (which loads it in an unselected
+  tab). A background Escape left the DevTools Console Settings menu open
+  (opened by AXPress, also with `Down` first); pressing the button again
+  closed it. `typeText("nostrings example 0123 ")` into TextEdit in the
+  background gave `Nostrings example 0123 `; with `{exact: true}`, the text
+  landed as given (with a `\n` between two runs). `permissions` without `ask`
+  no longer runs the ScreenCaptureKit probe; with the grants in place
+  `doctor` reported Screen Recording granted. `claude -p` (Claude Code
+  2.1.327) with a temporary `--mcp-config`, `--strict-mcp-config` and
+  `--allowedTools mcp__nostrings__js` opened Calculator, computed 2+2, printed
+  `4` and exited 0. A first version of the guard also undid nostrings' own
+  `activate()` right after a background action (seen as an extra late
+  restore near the foreground `dropFiles` check); bringing an app forward now
+  ends the watch, and a background menu press followed by `activate()` left
+  the fixture frontmost for 3.5 s. Final runs: `nostrings smoke` 7 of 7;
+  `smoke --macos` 53 of 54 once (the sampler caught the fixture in front for
+  one 67 ms sample before the guard reverted it; the check now allows a
+  switch undone within 300 ms), then 54 of 54 twice, each with one late
+  restore in `actions.log`. A clean-state retest of the Screen Recording
+  prompt (`sudo tccutil reset ScreenCapture`) was not run.
+
 The Grok, OpenCode, and Codex configs in `agents.md` follow each client's
 documented MCP format but have not been exercised end to end yet.
 
@@ -238,10 +277,15 @@ Builds Nostrings Fixture (`native/macos/fixture`, ad hoc signed into
 involved. Checks, in order: labeled form fields; web content; menu bar and
 submenu items; a menu shortcut in the background; `select` on a pop-up;
 `contextMenu`; checkbox; typing accents, emoji and CJK; `paste` (the clipboard
-is kept in the helper and put back); typing into and clicking web content;
-press and hold; double, right and middle click; scroll; pinch and rotate;
-window move, resize, minimize and restore; a new window and the read's notice;
-a sheet; an alert; hide and unhide; each SwiftUI control in the fixture's
+is kept in the helper and put back); `typeText` with `{exact: true}` into the
+notes text view, and its `exact_unavailable` error with no text field
+focused; typing into and clicking web content; press and hold; double, right
+and middle click; scroll; pinch and rotate; window move, resize, minimize and
+restore; a new window and the read's notice; a new window plus a secondary
+window whose app activates itself a second later, with the frontmost app
+sampled every 50 ms for 3 s (any switch must be undone within 300 ms, the
+user's app must be in front at the end, and the next read must say focus was
+given back); a sheet; an alert; hide and unhide; each SwiftUI control in the fixture's
 SwiftUI window; then a check that the frontmost app never changed. The last checks use the foreground route on purpose: drop a file,
 hover, an open panel, a save panel, then a whole-screen screenshot, the
 window list, menu bar extras, full screen and Spaces (`other_space`, then

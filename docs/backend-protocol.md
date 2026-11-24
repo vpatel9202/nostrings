@@ -30,7 +30,7 @@ own state are not gated: `hello`, `ping`, `permissions`, `listApps`,
 |---|---|---|
 | `hello` | `client` (name shown in dialogs and the menu) | `{version, platform, pid}` |
 | `ping` | | `{version, platform, pid, background}` |
-| `permissions` | `ask?` (`accessibility`, `screenRecording` or `inputMonitoring`) | `{accessibility, screenRecording, escapeWatcher, inputMonitoring}` |
+| `permissions` | `ask?` (`accessibility`, `screenRecording` or `inputMonitoring`), `probe?` | `{accessibility, screenRecording, escapeWatcher, inputMonitoring}` |
 | `listApps` | | `[{name, bundleId, pid?, path?, running, active?}]`; `active` marks the app in front on the screen the user sees (Android: the top task's package on the phone's own display 0, never a hidden session display) |
 | `resolveApp` | `query` (name, bundle id, `pid:N`, path) | one app |
 | `launch` | `bundleId`, `path`, `name`, `activate` | the running app |
@@ -47,6 +47,7 @@ own state are not gated: `hello`, `ping`, `permissions`, `listApps`,
 | `selectText` | `pid`, `index`, `start`, `length` | |
 | `keys` | `pid`, `chords: [{key, mods}]`, input options | input result |
 | `type` | `pid`, `text`, input options | input result |
+| `insertText` | `pid`, `text`, input options | input result plus `{inserted}`; `exact_unavailable` when the focused element takes no inserted text |
 | `click` | `pid`, `x`, `y`, `button`, `count`, `mods`, input options | input result |
 | `scroll` | `pid`, `x`, `y`, `dy`, `dx`, input options | input result |
 | `drag` | `pid`, `path: [[x, y], ...]`, `button`, input options | input result |
@@ -101,7 +102,11 @@ back from the error codes below, not from `ping`.
 `permissions` returns `inputMonitoring` (listening for key events, which
 Escape-to-stop needs on macOS) next to `accessibility` and `screenRecording`.
 `ask` names the one permission to prompt for; without it nothing is
-prompted. Never prompt for two at once: macOS shows one privacy prompt at a
+prompted. On macOS a check reads Screen Recording with
+`CGPreflightScreenCaptureAccess` only; `probe: true` also asks
+ScreenCaptureKit, which catches a grant that a long-running process has not
+seen yet but shows the Screen Recording prompt when there is no grant, so
+only a caller that means to prompt passes it. Never prompt for two at once: macOS shows one privacy prompt at a
 time and drops one that arrives while another is open. `escapeWatcher` says
 whether an Escape watcher is running.
 
@@ -147,6 +152,17 @@ background result is `{route, focusRestored}`, where `route` is `background`
 or `background-skylight` (Chromium and Electron apps), and `focusRestored` is
 true if the target took focus and the backend gave it back to the user's app.
 
+The accessibility-only methods (`performAction`, `setValue`, `focusElement`,
+`selectText`, `menuPress`, `menuShortcut`, `selectMenuItem`, `windowAction`,
+`open`) take `guard: true` when the client means them as background actions;
+their result then carries `focusRestored` too. After a guarded or background
+action the macOS helper keeps watching for 2.5 s: if the target makes itself
+frontmost and the user's input does not explain it (no mouse press in the
+last second, no modifier change such as Cmd+Tab), it gives focus back once.
+`activate`, foreground input, and `launch` or `open` with `activate: true`
+end the watch. The next result about that `pid`, from any method,
+carries `lateFocusRestored: {app, afterMs, restored, reason?}`.
+
 A backend with no background route should answer `mode: "background"` with
 `background_unavailable`; the client then falls back to foreground.
 
@@ -170,6 +186,7 @@ Replies carry `{message, code}`. Codes the macOS helper uses:
 | `permission` | A needed OS permission (Screen Recording) is missing. |
 | `bad_key` | A key name has no key code. |
 | `bad_request` | A parameter is missing or invalid, or the method is unknown. |
+| `exact_unavailable` | `insertText`: no focused element, or it does not take inserted text. |
 | `failed` | Anything else. |
 
 Clients act on `background_unavailable` and `background_unconfirmed` by

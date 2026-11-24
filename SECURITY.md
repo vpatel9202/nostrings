@@ -40,7 +40,8 @@ computer. Treat it with the same care as giving someone remote control.
 - **Action log.** `~/.nostrings/actions.log` has one JSON object per action:
   `ts`, `client` (the agent's name), `step` (the call's title, when given),
   then the action's own fields (`app`, `action`, and for example `target`,
-  `keys`, or `length`). Typed text is recorded as a length only, unless you
+  `keys`, or `length`), and `route` or `error` (written when the action
+  ends; a late focus restore adds an `action: "focus"` line). Typed text is recorded as a length only, unless you
   set `"log": {"text": true}`.
 - **Local only.** Nothing is sent over the network. The helper listens on a
   Unix socket that only your user can open.

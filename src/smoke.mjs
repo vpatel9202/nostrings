@@ -50,6 +50,28 @@ function frontmostApp() {
   }
 }
 
+// The frontmost app every `everyMs` for `ms`, through lsappinfo (no AppKit:
+// an osascript that loads AppKit and runs a loop can itself become frontmost).
+// Resolves to the samples [{ms, app}] where the app changed.
+async function watchFrontmost(ms, everyMs = 50) {
+  const name = () => {
+    try {
+      const asn = execFileSync("lsappinfo", ["front"]).toString().trim();
+      return execFileSync("lsappinfo", ["info", asn]).toString().split("\n")[0].split('"')[1] ?? null;
+    } catch {
+      return null;
+    }
+  };
+  const seen = [];
+  const t0 = Date.now();
+  while (Date.now() - t0 < ms) {
+    const app = name();
+    if (app && seen.at(-1)?.app !== app) seen.push({ ms: Date.now() - t0, app });
+    await new Promise((r) => setTimeout(r, everyMs));
+  }
+  return seen;
+}
+
 export async function runSmoke({ screenshot = true, full = false } = {}) {
   const frontBefore = frontmostApp();
   const mcp = client();
@@ -454,6 +476,9 @@ export async function runMacSmoke({ keep = false, foreground = true } = {}) {
     await check("checkbox through accessibility", `await fx.click((await fx.find({role: "checkbox", label: "Subscribe"})).index)`, "checkbox");
     await check("type any characters (accents, emoji, CJK)", `await fx.click((await fx.find({id: "name"})).index); await fx.pressKey("super+a BackSpace"); await fx.typeText("Zoë 🎉 東京")`, "text", (e) => e.value === "Zoë 🎉 東京");
     await check("paste long text, clipboard put back", `await fx.click((await fx.find({id: "notes"})).index); await fx.paste("${"lorem ipsum ".repeat(20).trim()} ✓")`, "notes", (e) => e.value.endsWith("✓"));
+    await check("typeText {exact: true} inserts through accessibility", `await fx.click((await fx.find({id: "notes"})).index); await fx.pressKey("super+a BackSpace"); await fx.typeText("nostrings exact 0123", {exact: true}); if (!/^ax-insert/.test(fx.lastRoute)) throw new Error("route " + fx.lastRoute)`, "notes", (e) => e.value === "nostrings exact 0123");
+    const noField = await run(`let code = "no error"; try { await fx.click((await fx.find({id: "canvas"})).index); await fx.typeText("x", {exact: true}); } catch (e) { code = e.code; } code`);
+    step("typeText {exact: true} without a text field fails (exact_unavailable)", /exact_unavailable/.test(noField.text), noField.text);
     await check("type into web content", `await fx.click((await fx.find({role: "text field", text: "Web field"})).index); await fx.typeText("web ok")`, "web", (e) => e.what === "input:web ok");
     await check("click web content", `await fx.click((await fx.find({role: "button", label: "Web button"})).index)`, "web", (e) => e.what === "button");
     const canvas = `(await fx.find({id: "canvas"})).index`;
@@ -472,6 +497,29 @@ export async function runMacSmoke({ keep = false, foreground = true } = {}) {
     const notice = await run(`await fx.getAXState()`);
     step("read notes the window that opened", /\(windows: .*opened/.test(notice.text), notice.text.split("\n").slice(-2).join(" "));
     await check("close a window", `await fx.window((await fx.windows()).find((w) => /Fixture Window/.test(w.title)).index).close()`, "window.closed", (e) => /Fixture Window/.test(e.title));
+    {
+      // A new window and a secondary window opened in the background; a
+      // second after the secondary one the fixture activates itself (as a
+      // report said Firefox did). The focus guard must give focus
+      // back: the frontmost app stays the same for 3 s, and the next read says so.
+      const from = since();
+      const watching = watchFrontmost(3000);
+      const opened = await run(`await fx.menu("File > New Window"); await fx.menu("File > Secondary Window"); fx.lastRoute`);
+      const seen = await watching;
+      const tried = events(from, "app.activated").length > 0;
+      // The guard reverts an activation it cannot prevent, so a sample can
+      // catch the fixture in front for a moment; more than 300 ms is a fail.
+      const awayMs = seen.map((s, k) => (s.app === seen[0].app ? 0 : (seen[k + 1]?.ms ?? 3000) - s.ms));
+      const longest = Math.max(0, ...awayMs);
+      const told = await run(`await fx.getAXState()`);
+      const noticed = /\(focus: .*gave focus back/.test(told.text);
+      step(
+        "new and secondary window in the background: the user's app stays frontmost (any switch undone within 300 ms)",
+        !opened.isError && tried && seen.length > 0 && longest <= 300 && seen.at(-1).app === seen[0].app && noticed,
+        `${opened.isError ? opened.text : `route ${opened.text.trim()}`}; fixture activated itself: ${tried}; frontmost: ${seen.map((s) => `${s.ms} ms ${s.app}`).join(", ") || "not sampled"}; notice on next read: ${noticed}`,
+      );
+      await run(`for (let i = 0; i < 4; i++) { const w = (await fx.windows()).find((x) => /Fixture Window|Fixture Secondary/.test(x.title)); if (!w) break; await fx.window(w.index).close(); }`);
+    }
     await check("sheet: open, type, OK", `await fx.click((await fx.find({label: "Show Sheet"})).index); await fx.expect({id: "sheetField"}); await fx.click((await fx.find({id: "sheetField"})).index); await fx.typeText("in sheet"); await fx.click((await fx.find({role: "button", label: "OK"})).index)`, "sheet", (e) => e.result === "OK" && e.text === "in sheet");
     await check("alert: pick a button", `await fx.click((await fx.find({label: "Show Alert"})).index); await fx.click((await fx.expect({role: "button", label: "Discard"})).index)`, "alert", (e) => e.result === "Discard");
     await check("hide and unhide the app", `await fx.hide(); await sleep(300); await fx.unhide()`, "app.unhidden");
