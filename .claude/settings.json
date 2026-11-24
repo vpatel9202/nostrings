@@ -14,8 +14,8 @@
         "hooks": [
           {
             "command": "node \"$CLAUDE_PROJECT_DIR/scripts/import-approved.mjs\"",
-            "type": "command",
-            "timeout": 120
+            "timeout": 120,
+            "type": "command"
           }
         ],
         "matcher": "startup"
