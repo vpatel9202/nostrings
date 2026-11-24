@@ -8,6 +8,8 @@
 import fs from "node:fs";
 import path from "node:path";
 import {
+  androidConfig,
+  androidLabels,
   closeBenchTextEdit,
   closeFinderWindow,
   launchFixture,
@@ -18,6 +20,8 @@ import {
   quitApp,
   quitFixture,
   readJsonLines,
+  resetAndroidFixture,
+  stopAndroidFixture,
   sh,
   sleep,
   waitFor,
@@ -445,4 +449,57 @@ await __s.setValue(__i(l, /text field.*Username/), sug); await __s.click(__i(l, 
       await quitFixture();
     },
   },
+  // ---- Android -------------------------------------------------------------
+  // These drive ui.device() against the test app in native/android/fixture
+  // (com.nostrings.fixture), which shows what it received in labels. They need
+  // --android-serial and run on the nostrings setup only; the other setups
+  // are Mac tools. Verification reads the labels with the harness's own
+  // session after the model's tool server is closed (one automation
+  // connection per phone), so `verifyAfterClose` is set.
+  {
+    id: "android-fixture-input",
+    platform: "android",
+    app: "com.nostrings.fixture",
+    kind: "text",
+    verifyAfterClose: true,
+    get prompt() {
+      return `On the Android device ${androidConfig.serial} (use ui.device(${JSON.stringify(androidConfig.serial)})), the test app com.nostrings.fixture is installed. Open it, type "${androidTyped}" into its text field, and tap the "Tap me" button three times.`;
+    },
+    async setup() {
+      androidTyped = `bench ${Math.random().toString(36).slice(2, 7)}`;
+      await resetAndroidFixture();
+    },
+    async verify() {
+      const tree = await androidLabels();
+      const echo = tree.match(/text "(echo: [^"]*)"/)?.[1];
+      const taps = tree.match(/text "(taps: [^"]*)"/)?.[1];
+      const ok = echo === `echo: ${androidTyped}` && taps === "taps: 3, long presses: 0";
+      return { ok, detail: `${echo ?? "no echo label"}; ${taps ?? "no taps label"}` };
+    },
+    teardown: stopAndroidFixture,
+  },
+  {
+    id: "android-fixture-gestures",
+    platform: "android",
+    app: "com.nostrings.fixture",
+    kind: "text",
+    verifyAfterClose: true,
+    get prompt() {
+      return `On the Android device ${androidConfig.serial} (use ui.device(${JSON.stringify(androidConfig.serial)})), the test app com.nostrings.fixture is installed. Open it, long press the "Tap me" button once without tapping it, and move the slider to at least 50.`;
+    },
+    async setup() {
+      await resetAndroidFixture();
+    },
+    async verify() {
+      const tree = await androidLabels();
+      const counts = tree.match(/text "(taps: [^"]*)"/)?.[1];
+      const slider = Number(tree.match(/text "slider: (\d+)"/)?.[1]);
+      const ok = counts === "taps: 0, long presses: 1" && slider >= 50;
+      return { ok, detail: `${counts ?? "no taps label"}; slider ${Number.isNaN(slider) ? "unread" : slider}` };
+    },
+    teardown: stopAndroidFixture,
+  },
 ];
+
+// The text the Android input task asks for, random per run.
+let androidTyped = "bench";

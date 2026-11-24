@@ -192,6 +192,14 @@ Spend and restarts:
 - `sideDoors`, `longPromptTurns` (Haiku requests over 100K prompt tokens,
   billed at the higher rate), `smallWindowReads` (nostrings reads that landed
   on a tooltip-sized window)
+- `focusSteals`, `focusOtherApps`, `cursorMoved`, `cursorMaxPx`: a host-side
+  watch of the user's desktop while the agent runs (Mac tasks only; `null`
+  otherwise). The harness polls the frontmost app's bundle id and the cursor
+  position about three times a second (`lib/watch.mjs`). `focusSteals` counts
+  departures from the app that was in front when the agent started;
+  `cursorMoved` is true when the pointer got more than 2 points from where it
+  started. Polling can miss a switch shorter than a poll, so both are lower
+  bounds.
 - `infra`: true for runs that say nothing about the tool
 - `reads` (nostrings only): `fullReads`, `diffReads`, `noChangeReads`,
   `reprints` (a full tree printed again for a window already printed), and
@@ -208,3 +216,32 @@ cover only the tasks every setup passed, so a fast failure does not look fast.
 Tool time is the tool's own work, and model time depends on how many round trips
 the tool needs and on API load. `results/pilot/` holds the first pass (one
 run per task and setup), kept apart so it doesn't mix with the full runs.
+
+## Report columns
+
+`report.mjs` shows median / p90 for round trips, cost and wall time (p90 is
+the nearest-rank 90th percentile; with few runs it is the worst run), the pass
+rate with its Wilson 95% interval, and model and effort columns. Runs of
+different models or efforts get separate rows rather than a shared median. The
+pure parts (`lib/stats.mjs`, `lib/watch.mjs`'s `foldWatch`) are tested by
+`npm test` (`test/bench.test.mjs`).
+
+## Android tasks
+
+`android-fixture-input` and `android-fixture-gestures` drive `ui.device()`
+against the test app in `native/android/fixture` (`com.nostrings.fixture`),
+whose labels report every tap, long press, typed character and slider move.
+They run on the `nostrings` setup only and need the fixture built
+(`npm run build:android`) and a device:
+
+```bash
+node bench/run.mjs --setups nostrings --tasks android-fixture-input,android-fixture-gestures --android-serial emulator-5554 --n 3
+```
+
+Calls, tokens, cost and time are recorded exactly as for Mac tasks. The
+harness installs the fixture and force-stops it before each run, closes the
+model's tool server, then reads the labels through its own short-lived
+nostrings session to verify. The server for these tasks runs with
+`NOSTRINGS_APPROVAL=allow-all`, as `smoke --android` does. Focus and cursor are
+not measured for them. `--dry-run` skips them unless `--android-serial` is
+given.

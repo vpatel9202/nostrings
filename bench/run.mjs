@@ -12,10 +12,11 @@ import os from "node:os";
 import path from "node:path";
 import { parseArgs } from "node:util";
 import { PRICES, runAgent } from "./lib/agent.mjs";
-import { FIXTURE_BUNDLE_ID, benchDir, buildFixture, closeOracle, readJsonLines, repoDir, sh, workDir } from "./lib/env.mjs";
+import { FIXTURE_BUNDLE_ID, androidConfig, benchDir, buildFixture, closeOracle, readJsonLines, repoDir, sh, sleep, workDir } from "./lib/env.mjs";
 import { quantile, summarize } from "./lib/metrics.mjs";
 import { SETUPS } from "./lib/setups.mjs";
 import { TASKS } from "./lib/tasks.mjs";
+import { startWatch } from "./lib/watch.mjs";
 
 const { values: opts } = parseArgs({
   options: {
@@ -33,6 +34,8 @@ const { values: opts } = parseArgs({
     "accept-sha": { type: "string" },
     label: { type: "string", default: "" },
     "stop-after-rep": { type: "string" },
+    // Required by the android-* tasks, which run on nostrings only: an adb serial such as emulator-5554.
+    "android-serial": { type: "string" },
     "allow-dirty": { type: "boolean", default: false },
     "dry-run": { type: "boolean", default: false },
   },
@@ -46,6 +49,11 @@ const setupNames = opts.setups.split(",").map((s) => s.trim());
 for (const name of setupNames) if (!SETUPS[name]) throw new Error(`Unknown setup ${name}; use ${Object.keys(SETUPS).join(", ")}`);
 const tasks = opts.tasks === "all" ? TASKS : opts.tasks.split(",").map((id) => TASKS.find((t) => t.id === id) ?? fail(`Unknown task ${id}`));
 const n = Number(opts.n);
+androidConfig.serial = opts["android-serial"] ?? null;
+const isAndroid = (task) => task.platform === "android";
+// Android tasks drive ui.device(), which only nostrings has.
+const supports = (task, setupName) => !isAndroid(task) || setupName === "nostrings";
+if (!opts["dry-run"] && tasks.some(isAndroid) && !androidConfig.serial) fail("The android-* tasks need --android-serial (for example emulator-5554), or leave them out with --tasks");
 // Per run; tasks with several records or user turns set their own.
 const maxTurns = Number(opts["max-turns"] ?? 40);
 // $0.75 on Sonnet; never under $0.15, which a Haiku run on a 200-row table can reach.
@@ -95,7 +103,7 @@ for (const signal of ["SIGINT", "SIGTERM"]) {
 
 fs.mkdirSync(workDir, { recursive: true });
 await buildFixture();
-await sh(process.execPath, [path.join(repoDir, "bin", "nostrings.mjs"), "allow", ...new Set(TASKS.map((t) => t.app)), FIXTURE_BUNDLE_ID]);
+await sh(process.execPath, [path.join(repoDir, "bin", "nostrings.mjs"), "allow", ...new Set(TASKS.filter((t) => !isAndroid(t)).map((t) => t.app)), FIXTURE_BUNDLE_ID]);
 
 try {
   if (opts["dry-run"]) await dryRun();
@@ -111,6 +119,10 @@ async function dryRun() {
   let bad = 0;
   for (const pass of [1, 2]) {
     for (const task of tasks) {
+      if (isAndroid(task) && !androidConfig.serial) {
+        console.log(`skip [${pass}] ${task.id}: needs --android-serial; not run`);
+        continue;
+      }
       await task.setup();
       const before = await task.verify();
       let after = null;
@@ -216,6 +228,7 @@ async function benchmark() {
       // Setups take turns on each task so drift over the session hits all of them.
       for (const setupName of setupNames) {
         if (done.has(runKey({ setup: setupName, task: task.id, rep }))) continue;
+        if (!supports(task, setupName)) continue;
         const label = `[${rep + 1}/${n}] ${task.id} × ${setupName}`;
         // Stop while there is still room for this cell's expensive runs.
         const cellCosts = records.filter((r) => r.setup === setupName && r.task === task.id).map((r) => r.costUsd);
@@ -281,6 +294,8 @@ async function runOne(task, setupName, rep, cap, transcriptDir) {
     await task.teardown().catch(() => {});
     return infra(`tool server failed to start: ${e.message}`);
   }
+  // Host-side watch of the user's frontmost app and cursor; Mac only.
+  const watch = isAndroid(task) ? null : await startWatch().catch(() => null);
   const started = Date.now();
   let agent;
   try {
@@ -289,13 +304,20 @@ async function runOne(task, setupName, rep, cap, transcriptDir) {
     agent = { usage: {}, turns: [], segments: [], finalText: "", stopReason: "harness-error", apiError: e.message, cost: 0 };
   }
   const wallMs = Date.now() - started;
+  const watched = await watch?.stop().catch(() => null);
+  // A phone allows one automation connection, so Android tasks close the
+  // model's tool server before the harness reads the screen.
+  if (task.verifyAfterClose) {
+    setup.close();
+    await sleep(1000);
+  }
   let check;
   try {
     check = await task.verify();
   } catch (e) {
     check = { ok: false, detail: `verify failed: ${e.message}`, broken: true };
   }
-  setup.close();
+  if (!task.verifyAfterClose) setup.close();
   await task.teardown().catch(() => {});
 
   const summary = summarize(setupName, task, agent);
@@ -312,6 +334,11 @@ async function runOne(task, setupName, rep, cap, transcriptDir) {
     usage: agent.usage,
     costUsd: Number(agent.cost.toFixed(4)),
     wallMs,
+    // Host-side watch (null on Android tasks or when nothing could be sampled).
+    focusSteals: watched?.focusSteals ?? null,
+    focusOtherApps: watched?.otherApps ?? null,
+    cursorMoved: watched?.cursorMoved ?? null,
+    cursorMaxPx: watched?.cursorMaxPx ?? null,
     ...summary,
   };
   const name = `${record.date.replace(/[:.]/g, "-")}-${task.id}-${setupName}.json`;

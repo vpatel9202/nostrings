@@ -372,7 +372,10 @@ function agentDesktopSetup() {
 }
 
 export const SETUPS = {
-  nostrings: () => mcpSetup("nostrings", process.execPath, [path.join(repoDir, "bin", "nostrings.mjs"), "mcp"]),
+  // Android tasks use the test fixture on a device the user named, so the
+  // fixture's approval dialog is skipped, as in `smoke --android`.
+  nostrings: (task) =>
+    mcpSetup("nostrings", process.execPath, [path.join(repoDir, "bin", "nostrings.mjs"), "mcp"], task?.platform === "android" ? { env: { NOSTRINGS_APPROVAL: "allow-all" } } : {}),
   ocu: () => mcpSetup("open-computer-use", path.join(benchDir, "node_modules", ".bin", "ocu"), ["mcp"]),
   cu: (task) => computerUseSetup(task),
   "codex-cu": () => codexSetup(),
