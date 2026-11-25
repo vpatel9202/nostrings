@@ -43,7 +43,8 @@ export const HOST_METHODS = new Set([
 
 // Android: any plain method name the server knows (the backend gates every
 // one that is not read-only), but not `hello` and not the `_` debug methods,
-// which are ungated. `_push` is the broker's own (a file copy that asks).
+// which are ungated. `_push`, `_appFunctions` and `_callAppFunction` are the
+// broker's own (run over adb on this computer; each asks first).
 const DEVICE_METHOD = /^[a-z][A-Za-z]{1,40}$/;
 const NOSTRINGS_METHODS = new Set(["ocr", "saveScript", "scriptRun", "scriptLog"]);
 
@@ -590,6 +591,20 @@ export class Broker {
       if (raw.to != null && typeof raw.to !== "string") throw coded("Refused: bad destination", "bad_request");
       result = await device.push(raw.path, raw.to != null ? { to: raw.to } : {});
       this.#log({ app: "android:files", action: "push", device: device.label, path: result?.path, bytes: result?.bytes });
+    } else if (method === "_appFunctions") {
+      if (raw.package != null && typeof raw.package !== "string") throw coded("Refused: bad package", "bad_request");
+      result = await device.appFunctions(raw.package != null ? { package: raw.package } : {});
+      this.#log({ app: "android:appfunctions", action: "list app functions", device: device.label, count: result?.length });
+    } else if (method === "_callAppFunction") {
+      if (typeof raw.package !== "string" || typeof raw.id !== "string") throw coded("Refused: callAppFunction needs a package and a function id", "bad_request");
+      const entry = { app: raw.package.slice(0, 200), action: "callAppFunction", device: device.label, function: raw.id.slice(0, 200) };
+      try {
+        result = await device.callAppFunction(raw.package, raw.id, raw.params ?? {}, raw.timeout != null ? { timeout: raw.timeout } : {});
+      } catch (error) {
+        this.#log({ ...entry, error: typeof error?.code === "string" ? error.code : "error" });
+        throw error;
+      }
+      this.#log(entry);
     } else {
       if (!DEVICE_METHOD.test(method) || method === "hello") throw coded(`Refused: ${method.slice(0, 60)} is not a method scripts may call`, "bad_request");
       const entry = QUIET.has(method)

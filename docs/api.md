@@ -462,6 +462,20 @@ await clock.getAXState();
   always asks first (approval key `android:notifications`; `nostrings allow
   android:notifications` skips the dialog, `nostrings revoke` restores it),
   and each read is logged.
+- `phone.appFunctions({package})` lists the AppFunctions apps on the phone
+  offer to agents (Android 16 and later, through the `cmd app_function`
+  shell command, so a build that has it) as `[{package, id, enabled,
+  schema}]`, and `phone.callAppFunction(pkg, id, params, {timeout})` runs
+  one and returns the app's result document, a step with no screen at all.
+  Listing asks first once (approval key `android:appfunctions`: it shows
+  which apps are installed); a call asks like opening that app, and both
+  are logged. Failures carry the app's own message with a code:
+  `not_found`, `timeout`, `locked` (the service is not ready yet, for a
+  minute or two after boot), or `app_function_error` (wrong `params`, for
+  one). Each function's parameter names come from the app's schema, which the
+  list does not print yet. Run on the API 37 emulator: 38 functions listed,
+  Permission Manager's `getPermissionsDeviceState` returned its screens;
+  Digital Wellbeing and launcher functions failed with their own errors.
 - `phone.push(localPath, {to})` copies a file from this computer to the
   phone (default `/sdcard/Download/`; a `to` ending in `/` keeps the name)
   and returns `{path, bytes}`; apps' file and photo pickers list it right
