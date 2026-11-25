@@ -137,3 +137,27 @@ nostrings approval allowlist   # never prompt; only allowlisted apps work
 ask-first ones (terminals, password managers, System Settings, messaging
 apps, and a few others), which still ask unless you `nostrings allow` them.
 The full list is in [SECURITY.md](../SECURITY.md#ask-first-apps).
+
+## Android phones and emulators
+
+The same session drives Android through `ui.device()`; nothing changes on
+the agent's side. On the computer you need `adb` (Android platform-tools) and
+a phone with USB or wireless debugging on, or an emulator. Check it:
+
+```bash
+nostrings doctor                          # lists each device and probes it
+nostrings smoke --android --serial emulator-5554
+```
+
+With more than one device connected (a phone shows up twice when both USB and
+wireless debugging are on), pass the serial: `ui.device("emulator-5554")`.
+On Android 14 and later each app the agent opens runs on its own hidden
+screen, so the phone's screen and keyboard stay with you. Approval dialogs
+for the phone appear on the computer, with the same `nostrings allow`
+settings; apps that can move money, read messages or change settings always
+ask first. See [api.md](api.md#android) for the calls, and
+[testing.md](testing.md#android-support-matrix) for the devices and versions
+that have run.
+
+Several agents can share one phone at a time: each session gets its own
+hidden screens, and one app can be open in only one session.

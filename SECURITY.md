@@ -193,6 +193,11 @@ dialogs, and an agent that could press them would approve itself.
   can show messages and one-time codes from any app, so it asks first even
   under `allow-all` (approval key `android:notifications`), and each read
   is logged.
+- **App functions.** `phone.callAppFunction()` runs a function an app
+  publishes for agents (AppFunctions, Android 16 and later) with no screen to
+  look at, so it asks like opening that app and each call is logged.
+  `phone.appFunctions()`, which lists them and so shows which apps are
+  installed, asks first once (approval key `android:appfunctions`).
 - **Files.** Scripts cannot read files, but `phone.push(path)` copies a file
   from this computer to the phone, so each file asks first, naming the path
   and size, and each copy is logged.
