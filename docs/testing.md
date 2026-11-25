@@ -393,7 +393,10 @@ and a lock screen, both left as they were):
   documented; they need someone to unlock it. In that run one hidden-screen
   check also failed: `getApp` after `js_reset` hit the 120 s script limit.
   The run before it hung for 120 s at the first connect, right after the
-  phone had locked. Neither was reproduced or explained. Later, with the
+  phone had locked. Both waited on the Mac's "phone is locked" approval
+  dialog, which asks once per session even under `allow-all`, with nobody
+  there to answer; the action log shows `denied` for `activate` when each
+  ended. Expected behaviour, not a hang in nostrings. Later, with the
   phone unlocked, three runs with the fix passed 23 of 23, 22 of 23 (the
   failing check was not captured) and 23 of 23. On the `gb_api36` emulator
   the fix passed 23 of 23 twice.
@@ -410,7 +413,7 @@ and a lock screen, both left as they were):
 
 ### Emulator CI, 2026-11-25
 
-`.github/workflows/android-emulator.yml` runs both Android smokes on
+`.github/workflows/android-emulator.yml` (run by hand for now) runs both Android smokes on
 x86_64 `google_apis` emulators (API 34, 35 and 36) on Linux runners with
 KVM, with animations off. First green-infrastructure run, all three APIs
 alike: `--sessions 2` passed 14 of 14; `smoke --android` passed 21 of 23,
@@ -418,7 +421,8 @@ failing the web screen's typing of `é 😀 日本` ("no key on the virtual
 keyboard") and "the phone's screen did not change". A first run also failed
 `js_reset drops the binding` because a Linux host prints a "runner not
 network-isolated" warning before the result; the check now skips warning
-lines. The job reports without blocking until those two are fixed.
+lines. Until those two are fixed the workflow runs only when started by
+hand (`gh workflow run android-emulator.yml`).
 
 ### Android support matrix
 

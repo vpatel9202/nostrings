@@ -503,6 +503,12 @@ export class AndroidBackend extends EventEmitter {
       name: this.names.get(pkg),
       ...(this.prompt ? { prompt: this.prompt } : {}),
     });
+    // A function runs whether or not the phone is locked, so a locked phone
+    // asks once per session, as acting on a hidden screen does.
+    if (!this.approved.has(`locked:${this.label}`)) {
+      const info = await this.#send("inspect", { pid: pkg, screen: "hidden", lockOnly: true }, 10_000);
+      if (info.locked) await authorizeLocked({ client: this.client, device: this.label, approved: this.approved, ...(this.prompt ? { prompt: this.prompt } : {}) });
+    }
     const quote = (s) => `'${String(s).replace(/'/g, "'\\''")}'`;
     const seconds = Math.max(1, Math.min(300, Math.round(Number(timeout) || 30)));
     const cmd = `cmd app_function execute-app-function --package ${pkg} --function ${quote(id)} --parameters ${quote(JSON.stringify(params ?? {}))} --timeout-duration ${seconds}`;

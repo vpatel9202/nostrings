@@ -195,9 +195,11 @@ dialogs, and an agent that could press them would approve itself.
   is logged.
 - **App functions.** `phone.callAppFunction()` runs a function an app
   publishes for agents (AppFunctions, Android 16 and later) with no screen to
-  look at, so it asks like opening that app and each call is logged.
+  look at, so it asks like opening that app (and on a locked phone, like
+  acting behind the lock screen), and each call is logged.
   `phone.appFunctions()`, which lists them and so shows which apps are
-  installed, asks first once (approval key `android:appfunctions`).
+  installed, asks once per session unless approval is `allow-all` (approval
+  key `android:appfunctions`).
 - **Files.** Scripts cannot read files, but `phone.push(path)` copies a file
   from this computer to the phone, so each file asks first, naming the path
   and size, and each copy is logged.

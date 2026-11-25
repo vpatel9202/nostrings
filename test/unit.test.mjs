@@ -1333,3 +1333,37 @@ test("Android AppFunctions: list and result parsing", async () => {
   assert.throws(() => parseAppFunctionResult("Exception: java.lang.IllegalArgumentException: User is not unlocked\n__exit=255"), { code: "locked" });
   assert.throws(() => parseAppFunctionResult("Error executing app function: AppFunctionException: Parameter x should be ...\n__exit=255"), { code: "app_function_error" });
 });
+
+test("Android AppFunctions: approval comes before adb runs anything", async () => {
+  const fsm = await import("node:fs");
+  const os = await import("node:os");
+  const pathm = await import("node:path");
+  const dir = fsm.mkdtempSync(pathm.join(os.tmpdir(), "ns-adb-"));
+  const marker = pathm.join(dir, "ran");
+  const fake = pathm.join(dir, "adb");
+  fsm.writeFileSync(fake, `#!/bin/sh\necho "$@" >> "${marker}"\necho '{ "androidAppfunctionsReturnValue": 1 }'\necho __exit=0\n`, { mode: 0o755 });
+  const saved = process.env.NOSTRINGS_ADB;
+  process.env.NOSTRINGS_ADB = fake;
+  try {
+    const { AndroidBackend } = await import("../src/backends/android.mjs");
+    const asked = [];
+    const make = (answer) => {
+      const b = new AndroidBackend({ serial: "emulator-5554", client: "Test", prompt: async (q) => (asked.push(q.detail), answer) });
+      b.child = {}; // connected, as far as these host-side calls care
+      b.approved.add("locked:emulator-5554");
+      return b;
+    };
+    await assert.rejects(make("deny").appFunctions(), { code: "denied" });
+    await assert.rejects(make("deny").callAppFunction("com.example.notes", "createNote", {}), { code: "denied" });
+    assert.equal(fsm.existsSync(marker), false, "adb ran before approval");
+    assert.equal(asked.length, 2);
+    const ok = make("session");
+    assert.deepEqual(await ok.callAppFunction("com.example.notes", "createNote", { title: "it's" }), { androidAppfunctionsReturnValue: 1 });
+    const line = fsm.readFileSync(marker, "utf8");
+    assert.match(line, /--package com\.example\.notes --function 'createNote' --parameters '\{"title":"it'\\''s"\}'/);
+    await assert.rejects(ok.callAppFunction("not a package", "x", {}), { code: "bad_request" });
+  } finally {
+    if (saved == null) delete process.env.NOSTRINGS_ADB; else process.env.NOSTRINGS_ADB = saved;
+    fsm.rmSync(dir, { recursive: true, force: true });
+  }
+});

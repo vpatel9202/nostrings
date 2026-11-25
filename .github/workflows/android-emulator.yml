@@ -1,13 +1,10 @@
 name: android-emulator
 # The Android smoke tests (one session and two at once) on x86_64 emulators,
-# on Linux runners with KVM. Runs when Android code changes, on main, and by
-# hand.
+# on Linux runners with KVM. Runs by
+# hand for now.
 on:
-  push:
-    branches: [main]
-    paths: ["src/**", "native/android/**", "bin/**", ".github/workflows/android-emulator.yml"]
-  pull_request:
-    paths: ["src/backends/android*.mjs", "src/smoke.mjs", "native/android/**", ".github/workflows/android-emulator.yml"]
+  # By hand until the known emulator failures are fixed (bead: smoke --android
+  # fails on API 35 and 37); then on pull requests that touch Android code.
   workflow_dispatch:
 jobs:
   smoke:

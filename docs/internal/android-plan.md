@@ -328,8 +328,9 @@ the README Status table lists Android as working, with tested versions.
 
 **Status (2026-11-25): all but the bench.** Every parity-map row now has a
 status: done, or a limit that api.md states. api.md, agents.md and
-SECURITY.md have Android sections. CI runs both Android smokes on API 34 to
-36 x86_64 emulators (`.github/workflows/android-emulator.yml`). Left: the
+SECURITY.md have Android sections. A CI workflow, started by hand for now, runs both
+Android smokes on API 34 to 36 x86_64 emulators
+(`.github/workflows/android-emulator.yml`). Left: the
 Android bench and the AndroidWorld comparison (the bench beads), then
 marking Android as working in the README.
 

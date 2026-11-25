@@ -712,7 +712,7 @@ export class App {
     throw new Error(`Could not bring ${this.name} to the front`);
   }
 
-  async #screenPoint(target, window) {
+  async #screenPoint(target, window, { settle = true } = {}) {
     if (isPoint(target)) {
       const view = await this.#ensureView(window);
       const [x, y] = target;
@@ -729,7 +729,7 @@ export class App {
       // lands where it was (or off the screen, before the slide starts).
       // Wait (up to about 1.5 s) until its center is on the screen and two
       // reads 80 ms apart agree.
-      if (this.platform === "android") {
+      if (this.platform === "android" && settle) {
         const view = await this.#ensureView(window).catch(() => null);
         const onScreen = (f) => {
           if (!view?.origin || !view?.size) return true;
@@ -753,7 +753,9 @@ export class App {
     const modList = [].concat(modifiers);
     const mods = modList.length ? parseKeys(`${modList.join("+")}+a`)[0].mods : [];
     return this.#act("click", { target: describeTarget(target), button, count }, async () => {
-      const [x, y] = await this.#screenPoint(target, options.window);
+      // A plain click on an index is pressed through accessibility, where
+      // the element's place does not matter, so it skips the Android wait.
+      const [x, y] = await this.#screenPoint(target, options.window, { settle: !(this.platform === "android" && Number.isInteger(target) && button === "left" && count === 1 && mods.length === 0) });
       const hit = await this.#call("hitTest", { x, y }).catch(() => null);
       const onMenu = hit?.role === "AXMenuItem";
       // A plain click on a pressable element: press it through accessibility,
