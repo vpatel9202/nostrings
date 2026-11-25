@@ -123,7 +123,7 @@ await calc.getAXState();
   lines moved up 75px`, so mostly newly visible text prints. Text that OCR
   reads differently after the move (`O` for `0`, a row split in two) still
   prints: on a real remote desktop, a 15-line scroll of a text file printed
-  44 lines instead of 62, 12 of them newly visible. Use it instead of a
+  45 lines instead of 66 (one of them the shift line, 12 newly visible rows). Use it instead of a
   screenshot whenever the question is "what does it say": it is text, so it
   costs far less. The first call builds the OCR tool with `swiftc` (about a
   minute); later calls take well under a second. OCR text can be wrong
