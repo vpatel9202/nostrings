@@ -69,10 +69,11 @@ await app.getAXState();
 
 ## 4. Remote desktops, virtual machines and canvases: OCR, then click
 
-Not yet run on a real machine. When a read shows one or two elements, the
-screen is drawn, so read its text with `app.ocr()` (text, not an image), and
-click the center of the frame you want. Frames are in the window image's
-pixels, the same space clicks use.
+Run on 2026-11-24 against a headless Linux VNC desktop (XFCE) viewed in
+macOS Screen Sharing, in the background. When a read shows one or two
+elements, the screen is drawn, so read its text with `app.ocr()` (text, not
+an image), and click the center of the frame you want. Frames are in the
+window image's pixels, the same space clicks use.
 
 ```js
 const app = await ui.getApp("Remote Desktop");   // any app whose read shows one or two elements
@@ -84,22 +85,43 @@ await app.ocr();                                  // prints only what changed
 ```
 
 To pull every row out of a long scrolling list (a table, a log, a
-report), do it in one call and return the rows, not a screenshot per page:
+report), do it in one call and return the rows, not a screenshot per page.
+OCR often splits one row into several pieces, so join the pieces that share
+a line before you compare:
 
 ```js
+const toRows = (items) => {
+  const rows = [];
+  for (const t of [...items].sort((a, b) => a.frame[1] - b.frame[1] || a.frame[0] - b.frame[0])) {
+    const cy = t.frame[1] + t.frame[3] / 2;
+    const row = rows.find((r) => Math.abs(r.cy - cy) <= 5);
+    if (row) row.items.push(t); else rows.push({ cy, items: [t] });
+  }
+  return rows.map((r) => r.items.sort((a, b) => a.frame[0] - b.frame[0]).map((t) => t.text).join(" "));
+};
 const seen = new Set(), rows = [];
-for (let page = 0; page < 30; page++) {
+for (let page = 0; page < 80; page++) {
   const before = seen.size;
-  for (const t of await app.ocr({ emit: false })) if (!seen.has(t.text)) { seen.add(t.text); rows.push(t.text); }
+  for (const r of toRows(await app.ocr({ emit: false }))) if (!seen.has(r)) { seen.add(r); rows.push(r); }
   if (seen.size === before) break;               // nothing new: the end of the list
-  await app.scroll([400, 300], 5);               // a point inside the list
-  await app.settle();
+  await app.scroll([400, 400], 5);               // a point inside the list
+  await sleep(300);                              // remote screens repaint late
 }
 rows;
 ```
 
-Remote screens repaint late, so if a page comes back the same as the last,
-`await sleep(300)` before the next OCR. Take a screenshot only to check
+On a 400-line text file this ended on its own after 16 pages and had every
+line. Without `toRows` it also ended, but 32 lines came back only in pieces.
+The set compares exact text, so OCR variants of one line (`O` for `0`) come
+back as separate rows: 685 rows for 400 lines in that run. Dedupe on a field
+you can normalize, such as an ID, when the count matters.
+
+Horizontal scroll may not reach the remote machine. macOS Screen Sharing
+sends no horizontal wheel at all (a real trackpad swipe does not scroll
+either), so `scroll(target, { dx })` does nothing there. Click the
+scrollbar arrows or press arrow keys instead.
+
+Take a screenshot only to check
 layout or visuals that text cannot show. Re-read after a resize: a click
 outside the window image throws instead of landing in another app.
 
