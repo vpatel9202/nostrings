@@ -56,41 +56,41 @@ Of 33 macOS features, 11 port directly, 16 need a redesign, 4 are better on
 Android, and 2 have no equivalent (the menu bar and code signing). Rows follow
 the order of `api.md`, then `design.md` and `SECURITY.md`.
 
-| macOS feature | Android approach | Parity |
-| --- | --- | --- |
-| Persistent JS session, `js` / `js_reset`, CLI daemon | Same tools and daemon, but the kernel holds one backend per device instead of one per process, and scripts see the target's platform, not only the host's `process.platform` (see Kernel and protocol changes) | Redesign |
-| `ui.getApp(query)` launches without focus | Resolve label or package name; `am start --display <session display>` | Port |
-| `ui.listApps({installed})` | PackageManager plus running tasks per display | Port |
-| `ui.permissions()` | Reports ADB link, server alive, accessibility connection, virtual display allowed, competing automation | Redesign |
-| `getAXState` text tree and diffs | Accessibility node tree; Android, Compose and Flutter roles mapped onto the AX role names | Port |
-| Stable element indices (`CFEqual` table) | Table keyed by window id plus node id, with a generation counter: lists reuse nodes and WebView ids reset on reload, so a reused index must raise `stale_index` | Redesign |
-| `menus: true` (menu bar) | No menu bar; overflow menus are ordinary popup windows. Drop it | No equivalent |
-| `frames: true`, image-pixel coordinates | One display is one image; the scale formula is unchanged | Port |
-| `getScreenshot` | Read the virtual display's surface; `screencap` on the default display. Secure windows come back black | Port |
-| `waitForChange`, `settle` | Polling first, as today; later driven by the accessibility event stream | Better on Android |
-| `windows()` | The nostrings window becomes the display or task, its windows merged in z-order. Dialogs, sheets and the keyboard must take over reads, the opposite of the macOS rule | Redesign |
-| `click` (accessibility press, else pointer) | Click action on clickable nodes, else an injected tap | Port |
-| `doubleClick`, `rightClick`, modifiers | Double tap; right click becomes long press; most modifiers mean nothing | Redesign |
-| `pressKey` (xdotool names) | Android key codes; add Back, Home, Recents as global actions | Redesign |
-| `typeText` | Ladder: set the field's text, then key events, then paste, reading back after each | Redesign |
-| `scroll` | Scroll actions on the node, else an injected swipe; "lines" needs a new unit | Port |
-| `drag` | Injected touch path; add `swipe`, `longPress`, `pinch` | Port |
-| `setValue`, `focus`, `selectText`, secondary actions | Matching node actions (set text, focus, set selection, custom actions) | Port |
-| `activate()` | Move the task to the default display, or bring it to the front there | Redesign |
-| Background input (SkyLight private calls) | One virtual display per session, as a route behind `background_unavailable`; Android 14 (API 34) floor if per-display focus needs it | Better on Android |
-| Foreground fallback; switching away stops the script | Default display; stop when the top task changes without the agent causing it | Redesign |
-| Focus guard | Becomes "did the task or focus leave my display", checked before each action | Redesign |
-| Drawn agent cursor | Nobody sees a virtual display; draw it in a host live view, and use the pointer-location overlay on the default display | Redesign |
-| Menu-bar status item (sessions, stop, revoke) | Host tray item; on-phone indicator through a notification if shell can post one, else an optional companion app | Redesign |
-| Escape to stop | Host Escape as today; on the phone, a hardware key pattern, or unplugging (server death stops everything) | Redesign |
-| Approval dialog in the helper | Prompt on the host; the phone server enforces the decision | Redesign |
-| Blocked apps | New Android ask-first list (approval, not a block), checked against the package of the window being acted on, not only the app launched | Redesign |
-| Action log | Host log as today, plus device serial and display id | Port |
-| `setup`, `doctor`, `smoke` | ADB discovery and server push; capability probes that name the vendor toggle; smoke against an owned fixture app | Redesign |
-| `signing` (keep grants across rebuilds) | Not needed: no grant is tied to the server's signature | No equivalent |
-| Named sessions side by side | One virtual display per session: real isolation, not just separate bindings | Better on Android |
-| Semantic shortcuts | New: intents and deep links by allowlist, later AppFunctions | Better on Android |
-| Pixel fallback for one-node trees | Screenshots and taps; OCR on the host | Port |
+| macOS feature | Android approach | Parity | Status (2026-11-25) |
+| --- | --- | --- | --- |
+| Persistent JS session, `js` / `js_reset`, CLI daemon | Same tools and daemon, but the kernel holds one backend per device instead of one per process, and scripts see the target's platform, not only the host's `process.platform` (see Kernel and protocol changes) | Redesign | Done |
+| `ui.getApp(query)` launches without focus | Resolve label or package name; `am start --display <session display>` | Port | Done (hidden screen; phone's screen with `{foreground: true}`) |
+| `ui.listApps({installed})` | PackageManager plus running tasks per display | Port | Done |
+| `ui.permissions()` | Reports ADB link, server alive, accessibility connection, virtual display allowed, competing automation | Redesign | Done (`doctor` probes the link, a private display and a tap on it) |
+| `getAXState` text tree and diffs | Accessibility node tree; Android, Compose and Flutter roles mapped onto the AX role names | Port | Done |
+| Stable element indices (`CFEqual` table) | Table keyed by window id plus node id, with a generation counter: lists reuse nodes and WebView ids reset on reload, so a reused index must raise `stale_index` | Redesign | Done (`stale_index`) |
+| `menus: true` (menu bar) | No menu bar; overflow menus are ordinary popup windows. Drop it | No equivalent | Limit: no menu bar |
+| `frames: true`, image-pixel coordinates | One display is one image; the scale formula is unchanged | Port | Done |
+| `getScreenshot` | Read the virtual display's surface; `screencap` on the default display. Secure windows come back black | Port | Done; secure windows come back black (limit) |
+| `waitForChange`, `settle` | Polling first, as today; later driven by the accessibility event stream | Better on Android | Done (event-driven `waitForChange`) |
+| `windows()` | The nostrings window becomes the display or task, its windows merged in z-order. Dialogs, sheets and the keyboard must take over reads, the opposite of the macOS rule | Redesign | Done (one window 0; dialogs, sheets and the keyboard merged in) |
+| `click` (accessibility press, else pointer) | Click action on clickable nodes, else an injected tap | Port | Done |
+| `doubleClick`, `rightClick`, modifiers | Double tap; right click becomes long press; most modifiers mean nothing | Redesign | Done (double tap; `rightClick` is a long press; modifiers ignored) |
+| `pressKey` (xdotool names) | Android key codes; add Back, Home, Recents as global actions | Redesign | Done (`Back`, `HomeScreen`, `Recents` and more) |
+| `typeText` | Ladder: set the field's text, then key events, then paste, reading back after each | Redesign | Done (set text, then keys; no paste, so the clipboard stays untouched) |
+| `scroll` | Scroll actions on the node, else an injected swipe; "lines" needs a new unit | Port | Done |
+| `drag` | Injected touch path; add `swipe`, `longPress`, `pinch` | Port | Done (`swipe`, `longPress`, `pinch`, `rotate`) |
+| `setValue`, `focus`, `selectText`, secondary actions | Matching node actions (set text, focus, set selection, custom actions) | Port | Done |
+| `activate()` | Move the task to the default display, or bring it to the front there | Redesign | Done |
+| Background input (SkyLight private calls) | One virtual display per session, as a route behind `background_unavailable`; Android 14 (API 34) floor if per-display focus needs it | Better on Android | Done on Android 14+ (API 34); below that, the phone's screen |
+| Foreground fallback; switching away stops the script | Default display; stop when the top task changes without the agent causing it | Redesign | Limit: on the phone's own screen a script does not stop when the user switches apps; hidden screens make it rare |
+| Focus guard | Becomes "did the task or focus leave my display", checked before each action | Redesign | Done (`moved_to_phone_screen`) |
+| Drawn agent cursor | Nobody sees a virtual display; draw it in a host live view, and use the pointer-location overlay on the default display | Redesign | Limit: no agent cursor on Android (nobody sees a hidden screen) |
+| Menu-bar status item (sessions, stop, revoke) | Host tray item; on-phone indicator through a notification if shell can post one, else an optional companion app | Redesign | Limit: the Mac's menu-bar item covers sessions; no on-phone indicator |
+| Escape to stop | Host Escape as today; on the phone, a hardware key pattern, or unplugging (server death stops everything) | Redesign | Done on the host (Escape on the Mac); limit: no stop gesture on the phone |
+| Approval dialog in the helper | Prompt on the host; the phone server enforces the decision | Redesign | Done (dialog on the computer) |
+| Blocked apps | New Android ask-first list (approval, not a block), checked against the package of the window being acted on, not only the app launched | Redesign | Done (ask-first list, checked against the window acted on) |
+| Action log | Host log as today, plus device serial and display id | Port | Done (device in each line) |
+| `setup`, `doctor`, `smoke` | ADB discovery and server push; capability probes that name the vendor toggle; smoke against an owned fixture app | Redesign | Done (`doctor`, `smoke --android`, `--sessions 2`) |
+| `signing` (keep grants across rebuilds) | Not needed: no grant is tied to the server's signature | No equivalent | Not needed |
+| Named sessions side by side | One virtual display per session: real isolation, not just separate bindings | Better on Android | Done (one display per session, shared broker) |
+| Semantic shortcuts | New: intents and deep links by allowlist, later AppFunctions | Better on Android | Done (`phone.open`, app functions) |
+| Pixel fallback for one-node trees | Screenshots and taps; OCR on the host | Port | Done (OCR on the host) |
 
 ## Kernel and protocol changes
 
@@ -325,6 +325,13 @@ vendors, and Android 11 and 13.
 
 **Exit:** every row of the parity map is done or documented as a limit, and
 the README Status table lists Android as working, with tested versions.
+
+**Status (2026-11-25): all but the bench.** Every parity-map row now has a
+status: done, or a limit that api.md states. api.md, agents.md and
+SECURITY.md have Android sections. CI runs both Android smokes on API 34 to
+36 x86_64 emulators (`.github/workflows/android-emulator.yml`). Left: the
+Android bench and the AndroidWorld comparison (the bench beads), then
+marking Android as working in the README.
 
 ### Phase 7: beyond parity
 

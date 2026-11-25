@@ -9,6 +9,12 @@ import path from "node:path";
 import zlib from "node:zlib";
 import { fileURLToPath } from "node:url";
 
+// A session's first result can start with a "nostrings warning:" line (an
+// unsandboxed runner on Linux, for one); checks compare what follows.
+function withoutWarnings(text) {
+  return text.split("\n").filter((line) => !line.startsWith("nostrings warning:")).join("\n").trim();
+}
+
 const cli = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "bin", "nostrings.mjs");
 
 function client(env = process.env) {
@@ -130,7 +136,7 @@ await calc.getAXState();`);
 
     await mcp.request("tools/call", { name: "js_reset", arguments: {} });
     const after = await mcp.js("typeof calc");
-    const resetOk = !after.isError && after.text.trim() === "undefined";
+    const resetOk = !after.isError && withoutWarnings(after.text) === "undefined";
     step("js_reset drops the binding", resetOk, resetOk ? undefined : after.text);
 
     if (full) {
@@ -402,7 +408,7 @@ JSON.stringify({ code });`);
 
     await mcp.request("tools/call", { name: "js_reset", arguments: {} });
     const after = await mcp.js("typeof fx");
-    step("js_reset drops the binding", !after.isError && after.text.trim() === "undefined", after.text);
+    step("js_reset drops the binding", !after.isError && withoutWarnings(after.text) === "undefined", after.text);
 
     // The phone's own screen, as getApp(name, {foreground: true}) asks.
     const phoneRoute = await run(`

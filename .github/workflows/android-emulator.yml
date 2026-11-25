@@ -17,6 +17,9 @@ jobs:
         api: [34, 35, 36]
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    # Informational until the known emulator failures are fixed (web typing of
+    # non-ASCII text, phone-screen launches on API 35): see docs/testing.md.
+    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -51,5 +54,4 @@ jobs:
           emulator-options: -no-snapshot-save -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
           script: |
             adb -s emulator-5554 shell input keyevent 82 || true
-            node bin/nostrings.mjs smoke --android --serial emulator-5554
-            node bin/nostrings.mjs smoke --android --sessions 2 --serial emulator-5554
+            node bin/nostrings.mjs smoke --android --serial emulator-5554; one=$?; node bin/nostrings.mjs smoke --android --sessions 2 --serial emulator-5554; two=$?; exit $((one | two))

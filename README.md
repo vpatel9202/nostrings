@@ -244,7 +244,7 @@ that app. Details: [SECURITY.md](SECURITY.md).
 | Platform | Status |
 |---|---|
 | macOS | Works. Built for macOS 14+; tested only on macOS 27 (Apple silicon). |
-| Android | Experimental. Hidden-screen sessions on Android 14+ (API 34); the phone's own screen below that. Tested on emulators API 34 to 37 and a Galaxy S24. |
+| Android | Experimental. Hidden-screen sessions on Android 14+ (API 34); the phone's own screen below that. Tested on emulators API 34 to 37 and a Galaxy S24 Ultra (Android 17), over wireless debugging; see the [support matrix](docs/testing.md#android-support-matrix). |
 | Windows | Planned (UI Automation). [Help wanted](#contributing). |
 | Linux | Planned (AT-SPI; Wayland limited). [Help wanted](#contributing). |
 

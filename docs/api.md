@@ -535,6 +535,10 @@ await clock.getAXState();
   `getAXState({keyboard: true})` to list its keys.
 - Coordinates are image pixels as on macOS; the image is the screen scaled so
   its long side is at most 1568.
+- Not on Android: the menu bar (`menus`), the drawn agent cursor, and a stop
+  gesture on the phone (Escape on the computer still stops a script). On the
+  phone's own screen a script does not stop when the user switches apps, as
+  it does on the Mac; on a hidden screen the user never shares the screen.
 - Needs `adb`. The npm package includes the server, built in the release
   workflow from the tagged source; a git checkout builds it with
   `npm run build:android` (Android SDK and a JDK). The server runs over ADB with shell privileges and stops with the
