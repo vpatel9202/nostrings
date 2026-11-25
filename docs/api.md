@@ -232,9 +232,18 @@ Everything here works on the background route unless it says foreground.
 - `app.contextMenu(target, item)` does the same with the element's context
   menu (what a right-click shows).
 - Open pop-up and context menus show in reads, after the window.
-- Firefox: a background `pressKey("Escape")` does not close an open
-  in-window menu (the DevTools Console Settings menu stayed open, also after
-  `Down`); press the button that opened it again, which closes it. An undocked DevTools window has no File, Edit or other menus, so
+- Firefox: the DevTools Console Settings menu is web content in the DevTools
+  window, and opening it with a press leaves keyboard focus in the console
+  input, so a plain Escape does not reach the menu (it stayed open in the
+  background, and once in the foreground). A
+  background `pressKey("Escape")` therefore first focuses the first item of an
+  open in-window menu (a `menu` in the window's tree), then sends the key; it
+  costs one extra read of the window. With the menu opened by a press and
+  Escape sent, the menu was gone 0.5 s later in 10 of 10 tries on Firefox 160
+  (one of them went out the foreground route, as Firefox had become frontmost
+  by then). Only Escape
+  does this; arrow keys and Return are sent as they are and were not retried.
+  An undocked DevTools window has no File, Edit or other menus, so
   `menu("File > New Window")` fails while it is Firefox's front window;
   `window(i).raise()` a browser window first.
 

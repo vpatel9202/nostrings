@@ -59,7 +59,13 @@ Nothing in the smoke test is mocked.
   address bar or opened with `app.open` (which loads it in an unselected
   tab). A background Escape left the DevTools Console Settings menu open
   (opened by AXPress, also with `Down` first); pressing the button again
-  closed it. `typeText("nostrings example 0123 ")` into TextEdit in the
+  closed it. Bead ns-wat, later the same day, on a throwaway Firefox profile
+  (a separate process, DevTools in its own window): the menu is a `menu` in
+  the DevTools window's tree, not a native pop-up window, and a foreground
+  Escape left it open too; focusing its first item with `focus(index)` and
+  then sending Escape closed it. `pressKey("Escape")` now does that step in the
+  background, and the menu was closed 0.5 s later in 10 of 10 tries (it stayed
+  open in 3 of 3 background tries without the step). `typeText("nostrings example 0123 ")` into TextEdit in the
   background gave `Nostrings example 0123 `; with `{exact: true}`, the text
   landed as given (with a `\n` between two runs). `permissions` without `ask`
   no longer runs the ScreenCaptureKit probe; with the grants in place

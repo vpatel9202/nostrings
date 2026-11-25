@@ -830,6 +830,11 @@ export class App {
     const repeat = Math.max(1, options.repeat ?? 1);
     return this.#act("pressKey", { keys: String(keys), repeat }, async () => {
       const all = Array.from({ length: repeat }, () => chords).flat();
+      // An in-window menu opened by accessibility (AXPress) holds no keyboard
+      // focus, so Escape would go to whatever had focus before it opened.
+      if (this.platform === "macos" && this.#useBackground(options) && all.every((c) => c.key === "Escape" && c.mods.length === 0)) {
+        await this.#focusOpenMenu(options);
+      }
       // A menu shortcut (Cmd+S) sent as a key never reaches a background
       // app's menus, so it presses the menu item instead. Other keys go as keys.
       if (this.platform === "macos" && this.#useBackground(options) && all.some((c) => c.mods.includes("super"))) {
@@ -857,6 +862,27 @@ export class App {
       }
       await this.#deliver("keys", { chords: all }, options);
     });
+  }
+
+  // Gives keyboard focus to the first item of an open in-window menu (a web
+  // content menu such as Firefox DevTools' Console Settings, which shows in the
+  // window's tree as a "menu"), so a key reaches the menu. Does nothing when
+  // no such menu is open or one of its items already has focus.
+  async #focusOpenMenu(options) {
+    try {
+      const nodes = await this.nodes({ window: options.window });
+      const at = nodes.findIndex((n) => n.role === "menu");
+      if (at < 0) return;
+      const items = [];
+      for (const n of nodes.slice(at + 1)) {
+        if (n.depth <= nodes[at].depth) break;
+        if (n.role === "menu item") items.push(n);
+      }
+      if (items.length === 0 || items.some((n) => n.focused)) return;
+      await this.#call("focusElement", { index: items[0].index, ...this.#guard() });
+    } catch {
+      // Best effort: the key still goes out as before.
+    }
   }
 
   async typeText(text, options = {}) {
