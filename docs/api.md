@@ -467,9 +467,10 @@ await clock.getAXState();
   shell command, so a build that has it) as `[{package, id, enabled,
   schema}]`, and `phone.callAppFunction(pkg, id, params, {timeout})` runs
   one and returns the app's result document, a step with no screen at all.
-  Listing asks first once (approval key `android:appfunctions`: it shows
-  which apps are installed); a call asks like opening that app, and both
-  are logged. Failures carry the app's own message with a code:
+  Listing asks once per session under the `ask` approval setting (key
+  `android:appfunctions`; it shows which apps are installed); a call asks
+  like opening that app, and once per session on a locked phone. Both are
+  logged. Failures carry the app's own message with a code:
   `not_found`, `timeout`, `locked` (the service is not ready yet, for a
   minute or two after boot), or `app_function_error` (wrong `params`, for
   one). Each function's parameter names come from the app's schema, which the
@@ -489,8 +490,11 @@ await clock.getAXState();
   given app, to jump straight to a screen. Approval is the same as opening
   the app.
 - A coordinate action on an element index (pinch, rotate, scroll, drag,
-  long press) waits up to about 1.5 s for the element to be on the screen and
-  hold still, so a screen that is still sliding in after a tap is not missed.
+  long press, a tap with a count or on a right click) waits up to about 1.5 s
+  for the element to be on the screen and hold still, so a screen that is
+  still sliding in after a tap is not missed. It costs at least one 80 ms
+  pause and two reads. A plain `click(index)` is pressed through
+  accessibility and does not wait.
 - `click(index)` presses the element through accessibility; `click([x, y])`
   taps. `rightClick` and `app.longPress(target, {ms})` press and hold.
   `app.swipe(from, to, {ms})` moves a finger without a long press first (pagers,
@@ -536,9 +540,10 @@ await clock.getAXState();
 - Coordinates are image pixels as on macOS; the image is the screen scaled so
   its long side is at most 1568.
 - Not on Android: the menu bar (`menus`), the drawn agent cursor, and a stop
-  gesture on the phone (Escape on the computer still stops a script). On the
-  phone's own screen a script does not stop when the user switches apps, as
-  it does on the Mac; on a hidden screen the user never shares the screen.
+  gesture on the phone. By code reading, not yet run: on the phone's own
+  screen a script does not stop when the user switches apps, as it does on
+  the Mac (on a hidden screen the user never shares the screen), and Escape
+  on the Mac stops an Android script as it does a Mac one.
 - Needs `adb`. The npm package includes the server, built in the release
   workflow from the tagged source; a git checkout builds it with
   `npm run build:android` (Android SDK and a JDK). The server runs over ADB with shell privileges and stops with the
