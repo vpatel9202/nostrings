@@ -117,7 +117,10 @@ await calc.getAXState();
   image pixels, ready to click, and prints one line per text unless
   `{emit: false}`. A repeat call on the same window prints only text that is
   new or moved and a count of what is gone (`{disableDiffing: true}` prints
-  everything); the returned array is always complete. Use it instead of a
+  everything); the returned array is always complete. Text within 2 px of
+  where it was counts as unchanged, and after a scroll the lines that all
+  moved by the same offset collapse into one line such as `scrolled: 308
+  lines moved up 75px`, so only newly visible text prints. Use it instead of a
   screenshot whenever the question is "what does it say": it is text, so it
   costs far less. The first call builds the OCR tool with `swiftc` (about a
   minute); later calls take well under a second. OCR text can be wrong

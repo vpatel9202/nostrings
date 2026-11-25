@@ -617,6 +617,42 @@ test("repeat OCR prints only new or moved text and counts what is gone", async (
   assert.doesNotMatch(d, /"Name"/);
 });
 
+test("OCR diff: a scroll collapses to one shift line; jitter and plain edits behave", async () => {
+  const { ocrDiff } = await import("../src/api.mjs");
+  const item = (t, x, y) => `${JSON.stringify(t)} @${x},${y} 40x12`;
+  const id = (r, c) => `R${String(r).padStart(2, "0")}C${String(c).padStart(2, "0")}`;
+  const grid = (from, to, dy = 0) => {
+    const out = [item("File Edit View", 10, 8)];
+    for (let r = from; r <= to; r++) for (let c = 1; c <= 14; c++) out.push(item(id(r, c), 46 + 68 * (c - 1), 218 + 15 * (r - from) + dy));
+    return out;
+  };
+  const before = grid(1, 27);
+  const after = grid(6, 33);
+  const d = ocrDiff("H", before, after);
+  const printed = d.split("\n").slice(1);
+  assert.equal(printed.filter((l) => l.startsWith("scrolled:")).length, 1);
+  assert.match(d, /scrolled: 308 lines moved up 75px/);
+  assert.equal(printed.filter((l) => l.startsWith("+ ")).length, 84);
+  assert.ok(printed.filter((l) => l.startsWith("+ ")).every((l) => /R(2[89]|3[0-3])C/.test(l)));
+  assert.doesNotMatch(d, /R10C05/);
+  assert.match(d, /1 unchanged not shown, 308 shifted/);
+  // Two texts read differently after the scroll print as new; the rest collapses.
+  const noisy = after.map((l) => l.replace("R10C05", "R1OC05").replace("R12C03", "R12CO3"));
+  const d2 = ocrDiff("H", before, noisy);
+  assert.match(d2, /\+ "R1OC05"/);
+  assert.match(d2, /\+ "R12CO3"/);
+  assert.match(d2, /scrolled: 306 lines moved up 75px/);
+  assert.doesNotMatch(d2, /"R10C04"/);
+  // 2 px of jitter on a static screen is no change.
+  const bar = [item("Edit", 38, 48), item("Save", 200, 300)];
+  assert.match(ocrDiff("H", bar, [item("Edit", 36, 48), item("Save", 200, 301)]), /— no change\.$/);
+  // A label that changes with nothing moving prints just that label.
+  const ui = [item("OK", 10, 10), item("Cancel", 60, 10), item("Help", 120, 10)];
+  const d3 = ocrDiff("H", ui, [item("OK", 10, 10), item("Cancel", 60, 10), item("Support", 120, 10)]);
+  assert.match(d3, /\+ "Support"/);
+  assert.doesNotMatch(d3, /scrolled|"OK"|"Cancel"/);
+});
+
 test("cell realm: no fetch, Buffer, URL or string eval; globalThis.constructor is not the host Function", async () => {
   const context = createCellContext({ setTimeout, TextEncoder, console: {} });
   const run = (code) => vm.runInContext(transformCell(code), context);
