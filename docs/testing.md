@@ -408,6 +408,18 @@ and a lock screen, both left as they were):
   and re-pair path (dropping the link could leave the phone unreachable with
   nobody there to pair it again), and other vendors.
 
+### Emulator CI, 2026-11-25
+
+`.github/workflows/android-emulator.yml` runs both Android smokes on
+x86_64 `google_apis` emulators (API 34, 35 and 36) on Linux runners with
+KVM, with animations off. First green-infrastructure run, all three APIs
+alike: `--sessions 2` passed 14 of 14; `smoke --android` passed 21 of 23,
+failing the web screen's typing of `é 😀 日本` ("no key on the virtual
+keyboard") and "the phone's screen did not change". A first run also failed
+`js_reset drops the binding` because a Linux host prints a "runner not
+network-isolated" warning before the result; the check now skips warning
+lines. The job reports without blocking until those two are fixed.
+
 ### Android support matrix
 
 What has run, per device and Android version. Hidden-screen sessions need
