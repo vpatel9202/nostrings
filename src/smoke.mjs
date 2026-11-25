@@ -6,6 +6,7 @@ import { execFileSync, spawn } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import zlib from "node:zlib";
 import { fileURLToPath } from "node:url";
 
 const cli = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "bin", "nostrings.mjs");
@@ -470,6 +471,250 @@ JSON.stringify({ code, message, screen: mp.screen });`);
   }
   const passed = results.every(Boolean);
   process.stdout.write(passed ? "\nAll Android smoke checks passed.\n" : "\nSome Android smoke checks failed.\n");
+  return passed;
+}
+
+// A PNG's pixels (8-bit, not interlaced, RGB or RGBA), enough to hash a
+// cropped region of the emulator's own capture. Filters are undone.
+function decodePng(buf) {
+  let w = 0, h = 0, depth = 0, type = 0, interlace = 0;
+  const idat = [];
+  for (let o = 8; o < buf.length; ) {
+    const len = buf.readUInt32BE(o), kind = buf.toString("latin1", o + 4, o + 8), body = buf.subarray(o + 8, o + 8 + len);
+    if (kind === "IHDR") [w, h, depth, type, interlace] = [body.readUInt32BE(0), body.readUInt32BE(4), body[8], body[9], body[12]];
+    else if (kind === "IDAT") idat.push(body);
+    o += 12 + len;
+  }
+  if (depth !== 8 || interlace || ![2, 6].includes(type)) throw new Error(`unsupported PNG (depth ${depth}, type ${type}, interlace ${interlace})`);
+  const bpp = type === 6 ? 4 : 3, stride = w * bpp;
+  const raw = zlib.inflateSync(Buffer.concat(idat));
+  const data = Buffer.alloc(h * stride);
+  for (let y = 0; y < h; y++) {
+    const f = raw[y * (stride + 1)], src = y * (stride + 1) + 1, dst = y * stride;
+    for (let x = 0; x < stride; x++) {
+      const a = x >= bpp ? data[dst + x - bpp] : 0, b = y ? data[dst - stride + x] : 0, c = x >= bpp && y ? data[dst - stride + x - bpp] : 0;
+      let add = 0;
+      if (f === 1) add = a;
+      else if (f === 2) add = b;
+      else if (f === 3) add = (a + b) >> 1;
+      else if (f === 4) {
+        const p = a + b - c, pa = Math.abs(p - a), pb = Math.abs(p - b), pc = Math.abs(p - c);
+        add = pa <= pb && pa <= pc ? a : pb <= pc ? b : c;
+      }
+      data[dst + x] = (raw[src + x] + add) & 255;
+    }
+  }
+  return { w, h, bpp, data };
+}
+
+// `nostrings smoke --android --sessions 2`: two independent nostrings sessions
+// (two MCP servers, one per-phone broker) act at once, each on its own hidden
+// screen, one on each fixture package. It proves each one's input landed only
+// in its own app and that the phone's own screen was not touched: focus
+// (dumpsys, sampled throughout), a screencap hash of display 0 before and
+// after, and on an emulator a capture by the emulator itself
+// (`adb emu screenrecord screenshot`), which never goes through nostrings.
+export async function runAndroidSessionsSmoke({ serial, keep = false } = {}) {
+  const { FIXTURE_APK, FIXTURE_PACKAGE, FIXTURE_APK2, FIXTURE_PACKAGE2, resolveSerial, adb } = await import("./backends/android.mjs");
+  const { paths } = await import("./config.mjs");
+  const crypto = await import("node:crypto");
+  const results = [];
+  const step = (name, pass, detail) => {
+    results.push(pass);
+    const text = detail == null ? "" : String(detail).trim().split("\n")[0];
+    process.stdout.write(`${pass ? "PASS" : "FAIL"}  ${name}${!pass && text ? `\n      ${text}` : ""}\n`);
+  };
+  if (!fs.existsSync(FIXTURE_APK) || !fs.existsSync(FIXTURE_APK2)) {
+    step("both fixture apps built", false, "Run: npm run build:android");
+    return false;
+  }
+  const packages = [FIXTURE_PACKAGE, FIXTURE_PACKAGE2];
+  let transport;
+  try {
+    transport = await resolveSerial(serial ?? process.env.ANDROID_SERIAL);
+    for (const [pkg, apk] of [[FIXTURE_PACKAGE, FIXTURE_APK], [FIXTURE_PACKAGE2, FIXTURE_APK2]]) {
+      const install = () => adb(["-s", transport, "install", "-r", "--user", "0", apk], { timeout: 120_000 });
+      await install().catch(async (error) => {
+        if (!/INSTALL_FAILED_UPDATE_INCOMPATIBLE|signatures do not match/i.test(error.message)) throw error;
+        await adb(["-s", transport, "uninstall", pkg]);
+        await install();
+      });
+      await adb(["-s", transport, "shell", "am", "force-stop", pkg]);
+    }
+  } catch (error) {
+    step("fixture apps install", false, error.message);
+    return false;
+  }
+  const emulator = transport.startsWith("emulator-");
+  const adbBin = process.env.NOSTRINGS_ADB || "adb";
+  const sh = (...args) => adb(["-s", transport, "shell", ...args]).catch(() => "");
+  const cropHash = (w, h, bpp, data) => {
+    const rows = data.subarray(Math.floor(h * 0.08) * w * bpp, Math.floor(h * 0.92) * w * bpp);
+    return crypto.createHash("sha1").update(rows).digest("hex");
+  };
+  const focus = async () => (await sh("dumpsys", "window")).match(/mTopFocusedDisplayId=(-?\d+)/)?.[1] ?? null;
+  const screencap = () => {
+    try {
+      const raw = execFileSync(adbBin, ["-s", transport, "exec-out", "screencap"], { maxBuffer: 128 << 20 });
+      const w = raw.readUInt32LE(0), h = raw.readUInt32LE(4), header = raw.length - w * h * 4;
+      const body = raw.subarray(header + Math.floor(h * 0.08) * w * 4, header + Math.floor(h * 0.92) * w * 4);
+      return { hash: crypto.createHash("sha1").update(body).digest("hex"), body, w, top: Math.floor(h * 0.08) };
+    } catch {
+      return {};
+    }
+  };
+  // The emulator's own capture of its main display, taken through its console.
+  const consoleShot = () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "nostrings-emu-"));
+    try {
+      execFileSync(adbBin, ["-s", transport, "emu", "screenrecord", "screenshot", dir], { timeout: 30_000 });
+      for (let i = 0; i < 20; i++) {
+        const png = fs.readdirSync(dir).find((f) => f.endsWith(".png"));
+        if (png) {
+          const { w, h, bpp, data } = decodePng(fs.readFileSync(path.join(dir, png)));
+          return cropHash(w, h, bpp, data);
+        }
+        execFileSync("sleep", ["0.3"]);
+      }
+      return null;
+    } catch {
+      return null;
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  };
+  const virtualDisplays = async () => ((await sh("dumpsys", "display")).match(/uniqueId="virtual:/g) ?? []).length;
+  const serverRunning = async () => (await sh("ps", "-A", "-o", "ARGS")).split("\n").some((l) => /com\.nostrings\.server\.Server/.test(l) && !/grep/.test(l));
+  const sockets = () => fs.readdirSync(paths.home).filter((f) => /^android-.*\.sock$/.test(f));
+  const sleepMs = (ms) => new Promise((r) => setTimeout(r, ms));
+
+  if (emulator) {
+    await sh("input", "keyevent", "KEYCODE_WAKEUP");
+    await sh("wm", "dismiss-keyguard");
+    // The "About" settings page holds still. (The Files app's empty state
+    // animates and made display 0 look changed; started with `am`, not
+    // nostrings, so no approval is involved.) Then wait until two captures
+    // 2 s apart agree, so a slow first draw is not read as nostrings' doing.
+    await sh("am", "start", "-W", "-a", "android.settings.DEVICE_INFO_SETTINGS");
+    let last = null;
+    for (let i = 0; i < 15; i++) {
+      await sleepMs(2000);
+      const now = screencap().hash;
+      if (now && now === last) break;
+      last = now;
+    }
+  }
+  const before = { focus: await focus(), cap: screencap(), emu: emulator ? consoleShot() : null, displays: await virtualDisplays(), sockets: sockets() };
+  const A = client({ ...process.env, NOSTRINGS_APPROVAL: "allow-all" });
+  const B = client({ ...process.env, NOSTRINGS_APPROVAL: "allow-all" });
+  const run = async (mcp, code) => {
+    const reply = await mcp.js(code);
+    if (reply.isError) return { error: reply.text.trim().split("\n").at(-1) };
+    try {
+      return JSON.parse(reply.text.trim().split("\n").at(-1));
+    } catch {
+      return { error: "unexpected output" };
+    }
+  };
+  const open = (pkg) => `
+const phone = ui.device(${JSON.stringify(transport)});
+const fx = await phone.getApp(${JSON.stringify(pkg)}, { foreground: false });
+await fx.activate();
+const tree = () => fx.getAXState({ emit: false, disableDiffing: true, frames: true });
+const label = async (prefix) => (await tree()).match(new RegExp('text "(' + prefix + '[^"]*)"'))?.[1];
+const tap = async () => fx.click((await fx.find({ role: "button", label: "Tap me" })).index);
+JSON.stringify({ screen: fx.screen, route: fx.lastRoute });`;
+  // Session A: taps, long presses, drags and swipes on the slider, then a word.
+  const workA = `
+const t0 = Date.now();
+for (let i = 0; i < 4; i++) {
+  await tap();
+  await fx.longPress((await fx.find({ role: "button", label: "Tap me" })).index);
+}
+const s = (await tree()).match(/^\\s*\\d+ slider "Slider".*@(\\d+),(\\d+) (\\d+)x(\\d+)/m).slice(1).map(Number);
+const y = s[1] + s[3] / 2;
+const sl = [];
+for (let i = 0; i < 3; i++) {
+  await fx.drag([s[0] + s[2] * 0.1, y], [s[0] + s[2] * 0.9, y]);
+  sl.push(Number((await label("slider")).split(" ")[1]));
+  await fx.swipe([s[0] + s[2] * 0.9, y], [s[0] + s[2] * 0.1, y]);
+  sl.push(Number((await label("slider")).split(" ")[1]));
+}
+await fx.click((await fx.find({ role: "text field" })).index);
+await fx.typeText("alpha");
+JSON.stringify({ t0, t1: Date.now(), taps: await label("taps"), echo: await label("echo"), sl, route: fx.lastRoute, tree: await tree() });`;
+  // Session B: six taps, then a different word.
+  const workB = `
+const t0 = Date.now();
+for (let i = 0; i < 6; i++) { await tap(); await sleep(400); }
+await fx.click((await fx.find({ role: "text field" })).index);
+await fx.typeText("bravo");
+await sleep(2500);
+JSON.stringify({ t0, t1: Date.now(), taps: await label("taps"), echo: await label("echo"), route: fx.lastRoute, tree: await tree() });`;
+  try {
+    for (const mcp of [A, B]) await mcp.request("initialize", { protocolVersion: "2025-11-25", capabilities: {}, clientInfo: { name: "nostrings smoke", version: "1" } });
+    const [a0, b0] = await Promise.all([run(A, open(FIXTURE_PACKAGE)), run(B, open(FIXTURE_PACKAGE2))]);
+    step("both sessions open their app on a hidden screen", a0.screen === "hidden" && b0.screen === "hidden", a0.error ?? b0.error ?? `${a0.screen}, ${b0.screen}`);
+    if (a0.screen !== "hidden" || b0.screen !== "hidden") return false;
+    const during = await virtualDisplays();
+    step("each session has its own display", during === before.displays + 2, `${before.displays} virtual displays before, ${during} with both open`);
+
+    // Both act at once while top focus is sampled from outside.
+    const samples = [];
+    let sampling = true;
+    const poll = (async () => {
+      while (sampling) {
+        samples.push(await focus());
+        await sleepMs(300);
+      }
+    })();
+    const [a, b] = await Promise.all([run(A, workA), run(B, workB)]);
+    sampling = false;
+    await poll;
+    step("the sessions acted at the same time", !a.error && !b.error && a.t0 < b.t1 && b.t0 < a.t1, a.error ?? b.error ?? `A ${a.t1 - a.t0} ms, B ${b.t1 - b.t0} ms, offset ${b.t0 - a.t0} ms`);
+    step("A's input landed in A's app", a.taps === "taps: 4, long presses: 4" && a.echo === "echo: alpha" && a.sl?.filter((v, i) => i % 2 === 0).every((v) => v >= 70) && a.sl?.filter((v, i) => i % 2 === 1).every((v) => v <= 30), a.error ?? `${a.taps}; ${a.echo}; slider ${a.sl}`);
+    step("B's input landed in B's app", b.taps === "taps: 6, long presses: 0" && b.echo === "echo: bravo", b.error ?? `${b.taps}; ${b.echo}`);
+    step("neither app saw the other's input", !/alpha/.test(b.tree ?? "alpha") && !/bravo/.test(a.tree ?? "bravo") && /^hidden screen/.test(a.route ?? "") && /^hidden screen/.test(b.route ?? ""), `${a.route} / ${b.route}`);
+    const bad = samples.filter((f) => f !== "0");
+    step("top focus stayed on display 0 throughout", samples.length >= 3 && bad.length === 0, `${samples.length} samples, ${bad.length} not on display 0 (${[...new Set(bad)].join(",")})`);
+
+    const after = { focus: await focus(), cap: screencap(), emu: emulator ? consoleShot() : null };
+    step("top focus is on display 0 after", after.focus === "0", `top focused display ${before.focus} -> ${after.focus}`);
+    if (emulator) {
+      step("display 0 unchanged (screencap hash)", after.cap.hash != null && after.cap.hash === before.cap.hash, `screencap of display 0 changed ${changedBox(before.cap, after.cap)}`);
+      step("display 0 unchanged (emulator's own capture)", after.emu != null && before.emu != null && after.emu === before.emu, before.emu == null || after.emu == null ? "emulator console capture failed" : "the emulator's capture of display 0 changed");
+    } else {
+      process.stdout.write(`info  the phone's screen ${after.cap.hash === before.cap.hash ? "did not change" : "changed (the user, a notification, or nostrings)"}\n`);
+    }
+
+    // Ending one session closes only its display; the other keeps reading.
+    await A.request("tools/call", { name: "js_reset", arguments: {} });
+    await sleepMs(1000);
+    const left = await run(B, `JSON.stringify({ echo: await label("echo") })`);
+    const remaining = await virtualDisplays();
+    step("resetting A leaves B working", left.echo === "echo: bravo" && remaining === before.displays + 1, left.error ?? `${left.echo}, ${remaining} virtual displays`);
+    await B.request("tools/call", { name: "js_reset", arguments: {} });
+  } finally {
+    A.close();
+    B.close();
+  }
+  // Both sessions are gone: the broker leaves after its idle window.
+  let gone = false;
+  for (let i = 0; i < 40 && !gone; i++) {
+    await sleepMs(1000);
+    gone = sockets().every((s) => before.sockets.includes(s)) && !(await serverRunning());
+  }
+  step("after both end: no broker socket and no server left", gone, `sockets ${sockets().join(",")}`);
+  const finalDisplays = await virtualDisplays();
+  step("after both end: no virtual display left", finalDisplays === before.displays, `${finalDisplays} virtual displays, ${before.displays} before`);
+  for (const pkg of packages) await sh("am", "force-stop", pkg);
+  if (!keep) {
+    for (const pkg of packages) await adb(["-s", transport, "uninstall", pkg]).catch(() => {});
+    const left = (await sh("pm", "list", "packages", "com.nostrings.fixture")).trim();
+    step("after both end: no fixture package left", left === "", left);
+  }
+  const passed = results.every(Boolean);
+  process.stdout.write(passed ? "\nAll two-session Android smoke checks passed.\n" : "\nSome two-session Android smoke checks failed.\n");
   return passed;
 }
 

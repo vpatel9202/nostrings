@@ -27,9 +27,10 @@ Usage:
   nostrings smoke [--full]           Batched, persistent smoke test on Calculator
   nostrings smoke --macos [--keep] [--background-only]  Every macOS capability, on Nostrings Fixture
                                     (--full adds background click/drag/scroll in TextEdit)
-  nostrings smoke --android [--serial s] [--keep]
+  nostrings smoke --android [--serial s] [--keep] [--sessions 2]
                                     The same on a phone or emulator, with a test app
-                                    that is installed for the run (--keep leaves it)
+                                    that is installed for the run (--keep leaves it);
+                                    --sessions 2 runs two sessions at once instead
   nostrings conformance [--command "cmd"] [--android [--serial s]] [--app name] [--input]
                                     Check a backend against docs/backend-protocol.md
   nostrings allow <app>...           Always allow an app (name or bundle id)
@@ -322,6 +323,7 @@ async function main() {
       full: { type: "boolean" },
       android: { type: "boolean" },
       serial: { type: "string" },
+      sessions: { type: "string" },
       keep: { type: "boolean" },
       yes: { type: "boolean", short: "y" },
       examples: { type: "boolean" },
@@ -413,8 +415,8 @@ async function main() {
       return;
     }
     case "smoke": {
-      const { runSmoke, runAndroidSmoke, runMacSmoke } = await import("../src/smoke.mjs");
-      const passed = flags.android ? await runAndroidSmoke({ serial: flags.serial, keep: flags.keep }) : flags.macos ? await runMacSmoke({ keep: flags.keep, foreground: !flags["background-only"] }) : await runSmoke({ full: flags.full });
+      const { runSmoke, runAndroidSmoke, runAndroidSessionsSmoke, runMacSmoke } = await import("../src/smoke.mjs");
+      const passed = flags.android ? await (flags.sessions === "2" ? runAndroidSessionsSmoke : runAndroidSmoke)({ serial: flags.serial, keep: flags.keep }) : flags.macos ? await runMacSmoke({ keep: flags.keep, foreground: !flags["background-only"] }) : await runSmoke({ full: flags.full });
       process.exitCode = passed ? 0 : 1;
       return;
     }

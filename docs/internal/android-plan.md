@@ -276,6 +276,17 @@ server runs each session on its own thread.
 before and after, emulator capture as an independent check) pass across the
 matrix with two sessions running.
 
+**Exit status (2026-11-24): met on the emulators, not yet on a physical
+phone.** `nostrings smoke --android --sessions 2` runs two sessions at once,
+one per fixture package, and checks focus (sampled throughout), a screencap
+hash of display 0, the emulator console's own capture of display 0, input
+isolation between the two apps, and cleanup. It passed 14 of 14 on API 34,
+35, 36 and 37 (the API 37 AVD is `Medium_Phone_API_37.0`). Matrix here means
+API 34 to 37 only; API 30 and 33 (default-display route) were not run. The
+physical phone run (hash reported, not checked) is still to do. Details and
+the unrelated `smoke --android` failures seen on API 35 and 37 are in
+[testing.md](../testing.md#emulator-run-2026-11-24-two-sessions).
+
 ### Phase 4: tree quality, text and speed
 
 - Hardening against fixture screens: list item reuse, WebView, Compose, a

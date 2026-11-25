@@ -21,6 +21,9 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 export const SERVER_DEX = path.join(here, "..", "..", "native", "android", "build", "nostrings-server.dex");
 export const FIXTURE_APK = path.join(here, "..", "..", "native", "android", "build", "nostrings-fixture.apk");
 export const FIXTURE_PACKAGE = "com.nostrings.fixture";
+// The same app under a second package name, so two sessions can each open one.
+export const FIXTURE_APK2 = path.join(here, "..", "..", "native", "android", "build", "nostrings-fixture2.apk");
+export const FIXTURE_PACKAGE2 = "com.nostrings.fixture2";
 const REMOTE_DEX = "/data/local/tmp/nostrings-server.dex";
 const SERVER_CLASS = "com.nostrings.server.Server";
 
