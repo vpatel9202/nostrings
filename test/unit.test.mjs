@@ -135,6 +135,57 @@ function fakeApp() {
   return { app: new App(ctx, { name: "Calc", pid: 1 }), state, printed };
 }
 
+// A macOS App whose window holds an open in-window menu, recording the calls.
+function menuApp({ menu = true, focused = false } = {}) {
+  const calls = [];
+  const ctx = {
+    config: { screenshot: { maxLongSide: 1568, maxPixels: 1_150_000 }, ax: { maxNodes: 800, maxDepth: 40, maxTextLength: 160 } },
+    checkAbort() {},
+    log() {},
+    async settle() {},
+    out: { text() {} },
+    backend: {
+      platform: "macos",
+      async request(method, params) {
+        calls.push([method, params]);
+        if (method === "windows") return [{ index: 0, windowId: 7, frame: [0, 0, 200, 300], scale: 2, title: "Tools", focused: true }];
+        if (method === "axTree") {
+          const nodes = [{ i: 0, d: 0, role: "AXWindow", title: "Tools", frame: [0, 0, 200, 300] }];
+          if (menu) {
+            nodes.push(
+              { i: 1, d: 1, role: "AXMenu" },
+              { i: 2, d: 2, role: "AXMenuItem", title: "One" },
+              { i: 3, d: 2, role: "AXMenuItem", title: "Two", focused },
+              { i: 4, d: 1, role: "AXMenuItem", title: "Outside" },
+            );
+          }
+          return { window: { title: "Tools", windowId: 7 }, nodes };
+        }
+        if (method === "focusElement") return {};
+        if (method === "keys") return { route: "background" };
+        throw new Error(`unexpected ${method}`);
+      },
+    },
+  };
+  return { app: new App(ctx, { name: "Fx", pid: 1 }), calls };
+}
+
+test("a background Escape first focuses the first item of an open in-window menu", async () => {
+  const { app, calls } = menuApp();
+  await app.pressKey("Escape");
+  const names = calls.map(([m]) => m);
+  assert.ok(names.indexOf("focusElement") > 0 && names.indexOf("focusElement") < names.indexOf("keys"), names.join());
+  assert.equal(calls.find(([m]) => m === "focusElement")[1].index, 2);
+});
+
+test("a background Escape leaves focus alone without a menu, with one focused, or for other keys", async () => {
+  for (const [opts, keys] of [[{ menu: false }, "Escape"], [{ focused: true }, "Escape"], [{}, "Down"], [{}, "super+Escape"]]) {
+    const { app, calls } = menuApp(opts);
+    await app.pressKey(keys).catch(() => {});
+    assert.ok(!calls.some(([m]) => m === "focusElement"), `${JSON.stringify(opts)} ${keys}`);
+  }
+});
+
 test("a silent read does not move the diff baseline", async () => {
   const { app, state, printed } = fakeApp();
   await app.getAXState();
