@@ -157,6 +157,7 @@ For a meaningful result, keep some other app frontmost while it runs.
 ```bash
 npm run build:android                 # a git checkout only: the npm package includes both
 nostrings smoke --android [--serial s] # --keep leaves the fixture installed
+nostrings smoke --android --sessions 2 [--serial s]  # two sessions at once, see below
 ```
 
 Installs a small test app (`com.nostrings.fixture`, built from
@@ -298,6 +299,68 @@ hardened (no `fetch`, `Buffer`, `URL` or `eval` in cells):
   daemon that may have been started from another checkout. The `Chrome` app was
   force-stopped afterward.
 - `npm test`: 27 passed.
+
+### Emulator run, 2026-11-24 (two sessions)
+
+New repeatable check: `nostrings smoke --android --sessions 2 --serial s`
+(14 checks, about a minute). It installs both fixture packages and starts
+two separate `nostrings mcp` processes that share the per-phone broker.
+Session A drives `com.nostrings.fixture` (4 taps, 4 long presses, 3 drags and
+3 swipes on the slider, then types `alpha`) while session B drives
+`com.nostrings.fixture2` (6 taps, then types `bravo`), each on its own hidden
+screen. It checks that:
+- both open on a hidden screen, each on its own virtual display;
+- the two runs overlapped in time;
+- each app's own labels hold exactly its session's counts, slider moves and
+  text, and neither app's tree contains the other's text;
+- top focus read from `dumpsys window` every 0.3 s stayed on display 0, and
+  is on display 0 after;
+- on an emulator, display 0 (status and navigation bars cropped) hashes the
+  same before and after through two independent captures, `adb exec-out
+  screencap` and the emulator console's `screenrecord screenshot` (the
+  emulator writes its own PNG of the main display; nothing goes through
+  nostrings' server). Both were checked to notice a change: the console
+  capture differed after opening Settings;
+- resetting A closes only A's display and B keeps reading;
+- after both end, the broker exits within its idle window and leaves no
+  socket, no server process on the phone, no virtual display and (without
+  `--keep`) no fixture package. On a physical phone the display-0 hash is
+  reported, not checked.
+
+Run on the `gb_api34`, `gb_api35` and `gb_api36` AVDs and on
+`Medium_Phone_API_37.0` (there is no `gb_api37`), one at a time, each booted
+with `-no-snapshot-save -no-audio -no-boot-anim` and `--serial
+emulator-5554`, waiting for boot and a load average under 3 first:
+
+| API | two sessions | `smoke --android` (same boot, after it) |
+|---|---|---|
+| 34 | 14 of 14 | 23 of 23 |
+| 35 | 14 of 14 | 18 of 23 |
+| 36 | 14 of 14 | 23 of 23 |
+| 37 | 14 of 14 | 21 of 23 |
+
+What turned up:
+- The first version parked the phone's screen on the Files app. Its empty
+  state animates, and on API 37 display 0 differed in a 330 x 640 pixel box
+  around that animation in 3 of 6 runs, by both captures; once it was the
+  System UI "not responding" dialog (the Mac was busy, load average 6 to 13).
+  Neither was nostrings. The check now parks the phone on Settings > About
+  (started with `am`, which holds still) and waits until two captures agree.
+  After the change it passed 14 of 14 in 3 of 3 extra runs on API 37 at load
+  5 to 13, and in every matrix run above.
+- The existing `smoke --android` fails on API 35 and 37 in this run, in checks
+  the two-session check does not use: `{foreground: true}` ("did not come to
+  the front" after 5 s) and the `moved_to_phone_screen` check (both start an
+  app on display 0), the web screen's typing of `é 😀 日本` ("no key on the
+  virtual keyboard"), and once the slider drag and the display-0 hash. On API
+  35 with a fresh boot and no two-session run first, four checks failed (the
+  same two start-on-display-0 checks, the web typing and the display-0 hash),
+  so the two-session check does not cause them. A rerun on API 37, on a boot
+  that had already run the two-session check several times, passed the
+  foreground checks and failed the web typing and the display-0 hash. Not
+  investigated further (the cause could be load or timing: the launch wait on
+  display 0 is 5 s); on API 34 and 36 the same code passed 23 of 23.
+- `npm test`: 45 passed.
 
 ## macOS capability test
 
