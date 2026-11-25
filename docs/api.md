@@ -474,6 +474,9 @@ await clock.getAXState();
   extras})` takes an intent instead, and `app.open(...)` sends one to a
   given app, to jump straight to a screen. Approval is the same as opening
   the app.
+- A coordinate action on an element index (pinch, rotate, scroll, drag,
+  long press) waits up to about 1.5 s for the element to be on the screen and
+  hold still, so a screen that is still sliding in after a tap is not missed.
 - `click(index)` presses the element through accessibility; `click([x, y])`
   taps. `rightClick` and `app.longPress(target, {ms})` press and hold.
   `app.swipe(from, to, {ms})` moves a finger without a long press first (pagers,
@@ -523,7 +526,9 @@ await clock.getAXState();
   `npm run build:android` (Android SDK and a JDK). The server runs over ADB with shell privileges and stops with the
   session. Only one automation tool can read the screen at a time; stop
   uiautomator, Appium or Maestro first.
-- `nostrings doctor` lists connected devices and checks each one;
+- `nostrings doctor` lists connected devices and checks each one (the
+  connection, a private display, a tap on it), naming the vendor setting that
+  usually blocks a failed probe;
   `nostrings smoke --android` runs an end-to-end check with a test app.
 
 ## Known limits

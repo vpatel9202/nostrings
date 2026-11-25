@@ -1262,3 +1262,53 @@ test("broker: one log line per request when it ends, with route or error, and la
     assert.equal(entries[2].afterMs, 900);
   });
 });
+
+test("Android doctor: capability probes and vendor toggles", async () => {
+  const { capabilityChecks, vendorToggle } = await import("../src/backends/android.mjs");
+  assert.match(vendorToggle("Xiaomi"), /USB debugging \(Security settings\)/);
+  assert.match(vendorToggle("OnePlus"), /Disable permission monitoring/);
+  assert.equal(vendorToggle("Google"), null);
+  const calls = [];
+  const ok = { info: { manufacturer: "samsung", hiddenScreen: true }, request: async (m, p) => { calls.push([m, p]); return m === "_createDisplay" ? { displayId: 7 } : {}; } };
+  const good = await capabilityChecks(ok, "adb-X._adb-tls-connect._tcp", { shell: async () => "30000\n" });
+  assert.deepEqual(good.map(([level]) => level), ["info", "ok", "ok", "info"]);
+  assert.match(good[0][1], /wireless debugging/);
+  assert.deepEqual(calls.map(([m]) => m), ["_createDisplay", "_tapDisplay"]);
+  assert.equal(calls[1][1].display, 7);
+  assert.match(good[3][1], /30 s/);
+  const blocked = { info: { manufacturer: "Xiaomi", hiddenScreen: true }, request: async (m) => { if (m === "_tapDisplay") throw new Error("Injecting input requires INJECT_EVENTS"); return { displayId: 3 }; } };
+  const bad = await capabilityChecks(blocked, "emulator-5554", { shell: async () => "" });
+  const fail = bad.find(([level]) => level === "fail");
+  assert.match(fail[1], /input injection/);
+  assert.match(fail[2], /Security settings/);
+  assert.match(bad[0][1], /the emulator/);
+  const old = await capabilityChecks({ info: { hiddenScreen: false }, request: async () => { throw new Error("no"); } }, "s", { shell: async () => "" });
+  assert.deepEqual(old.map(([level]) => level), ["info", "info"]);
+});
+
+test("Android: a coordinate action on an index waits for a sliding element to stop", async () => {
+  const { createApi } = await import("../src/api.mjs");
+  // Off the screen and still at first (before the slide), then moving, then settled.
+  const frames = [[1500, 141, 724, 1427], [1500, 141, 724, 1427], [300, 141, 724, 1427], [0, 141, 724, 1427], [0, 141, 724, 1427]];
+  let reads = 0;
+  const sent = [];
+  const dev = {
+    platform: "android",
+    label: "Phone",
+    info: { hiddenScreen: true },
+    async request(method, params) {
+      if (method === "resolveApp") return { name: "Fixture", bundleId: "com.f", pid: "com.f", running: true };
+      if (method === "elementFrame") return { frame: frames[Math.min(reads++, frames.length - 1)] };
+      if (method === "windows") return [{ index: 0, frame: [0, 0, 1440, 3120], scale: 1, title: "Fixture" }];
+      sent.push([method, params]);
+      return {};
+    },
+  };
+  const api = createApi({ backend: {}, device: () => dev, config: { androidSettleMs: 0, screenshot: { maxLongSide: 1568, maxPixels: 1150000 } }, checkAbort() {}, log() {}, settle: async () => {}, out: { text() {} } });
+  const app = await api.device().getApp("com.f");
+  await app.scroll(5, 1);
+  const scroll = sent.find(([m]) => m === "scroll");
+  assert.ok(scroll, "scroll sent");
+  assert.equal(scroll[1].x, 362);
+  assert.equal(reads, 5);
+});

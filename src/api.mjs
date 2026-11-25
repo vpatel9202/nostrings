@@ -30,6 +30,10 @@ async function recognize(ctx, shot, options) {
   return recognizeText(Buffer.from(shot.data, "base64"), { languages: options.languages });
 }
 
+function sameFrame(a, b) {
+  return Array.isArray(a) && Array.isArray(b) && a.length === b.length && a.every((v, i) => Math.abs(v - b[i]) < 1);
+}
+
 function isPoint(value) {
   return Array.isArray(value) && value.length === 2 && value.every(Number.isFinite);
 }
@@ -719,7 +723,26 @@ export class App {
       return toScreen(view, target);
     }
     if (Number.isInteger(target)) {
-      const { frame } = await this.#call("elementFrame", { index: target });
+      let { frame } = await this.#call("elementFrame", { index: target });
+      // Android screens slide in after a tap: the element is in the tree
+      // before it reaches its place, so a coordinate action right away
+      // lands where it was (or off the screen, before the slide starts).
+      // Wait (up to about 1.5 s) until its center is on the screen and two
+      // reads 80 ms apart agree.
+      if (this.platform === "android") {
+        const view = await this.#ensureView(window).catch(() => null);
+        const onScreen = (f) => {
+          if (!view?.origin || !view?.size) return true;
+          const [x, y] = center(f);
+          return x >= view.origin[0] && y >= view.origin[1] && x < view.origin[0] + view.size[0] && y < view.origin[1] + view.size[1];
+        };
+        for (let i = 0; i < 18; i++) {
+          await new Promise((r) => setTimeout(r, 80));
+          const next = (await this.#call("elementFrame", { index: target })).frame;
+          if (sameFrame(next, frame) && onScreen(next)) break;
+          frame = next;
+        }
+      }
       return center(frame);
     }
     throw new TypeError("Target must be [x, y] image pixels or an element index");

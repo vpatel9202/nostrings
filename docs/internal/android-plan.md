@@ -307,6 +307,16 @@ per task.
 
 **Exit:** a published support matrix per device and Android version.
 
+**Status (2026-11-25): matrix published, one phone.** The support matrix is
+in [testing.md](../testing.md#android-support-matrix). `doctor` probes the
+connection, a private display and a tap on it, and names the vendor
+setting when a probe fails. On the S24 Ultra over wireless debugging,
+hidden-screen sessions (one and two at once) ran awake and locked;
+the run found and fixed coordinate actions landing during a screen's slide-in
+animation. Still open: USB, the adb reconnect and re-pair path (not safe to
+try with nobody at the phone), a clean unlocked run after the fix, other
+vendors, and Android 11 and 13.
+
 ### Phase 6: prove parity
 
 - Full Android bench, including a comparison on AndroidWorld.
