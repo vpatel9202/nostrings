@@ -500,6 +500,62 @@ test("saved scripts: names are checked, the first line describes, args parse", a
   }
 });
 
+test("saved scripts: listing skips bad names and tolerates a missing description", async () => {
+  const fsm = await import("node:fs");
+  const osm = await import("node:os");
+  const pathm = await import("node:path");
+  const home = fsm.mkdtempSync(pathm.join(osm.tmpdir(), "nostrings-scripts-"));
+  const before = process.env.NOSTRINGS_HOME;
+  process.env.NOSTRINGS_HOME = home;
+  try {
+    const s = await import("../src/scripts.mjs");
+    const dir = pathm.join(home, "scripts");
+    fsm.mkdirSync(dir, { recursive: true });
+    fsm.writeFileSync(pathm.join(dir, "plain.js"), "return 1;\n");
+    fsm.writeFileSync(pathm.join(dir, "Bad Name.js"), "// nope\nreturn 1;\n");
+    fsm.writeFileSync(pathm.join(dir, "notes.txt"), "// not a script\n");
+    fsm.writeFileSync(pathm.join(dir, "b.js"), "// Second\n");
+    fsm.writeFileSync(pathm.join(dir, "a.js"), "// First\n");
+    assert.deepEqual(s.listScripts(), [
+      { name: "a", description: "First" },
+      { name: "b", description: "Second" },
+      { name: "plain", description: "" },
+    ]);
+  } finally {
+    if (before === undefined) delete process.env.NOSTRINGS_HOME;
+    else process.env.NOSTRINGS_HOME = before;
+    fsm.rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("action log lines carry route on success and error code on failure", async () => {
+  const fsm = await import("node:fs");
+  const pathm = await import("node:path");
+  await withHome("nostrings-actionlog-", async (home) => {
+    const h = await brokerHarness({
+      handlers: {
+        click: () => ({ route: "fake" }),
+        scroll: () => {
+          throw Object.assign(new Error("hidden"), { code: "not_visible" });
+        },
+      },
+    });
+    const ok = await h.call("host", "click", { pid: 7, x: 1, y: 1 });
+    const bad = await h.call("host", "scroll", { pid: 7, x: 1, y: 1, dy: 3 });
+    await h.finish();
+    assert.equal(ok.error, undefined);
+    assert.ok(bad.error, "the failing call still rejects");
+    const entries = fsm.readFileSync(pathm.join(home, "actions.log"), "utf8").trim().split("\n").map((l) => JSON.parse(l));
+    assert.equal(entries.length, 2);
+    assert.equal(entries[0].action, "click");
+    assert.equal(entries[0].route, "fake");
+    assert.equal("error" in entries[0], false);
+    assert.equal(entries[1].action, "scroll");
+    assert.equal(entries[1].error, "not_visible");
+    assert.equal("route" in entries[1], false);
+  });
+});
+
 test("ui.log writes one tagged entry, redacts strings, rejects bad values", async () => {
   const { createApi } = await import("../src/api.mjs");
   const lines = [];
