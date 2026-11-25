@@ -368,6 +368,61 @@ What turned up:
   display 0 is 5 s); on API 34 and 36 the same code passed 23 of 23.
 - `npm test`: 45 passed.
 
+### Physical phone run, 2026-11-25
+
+On a physical test phone (Galaxy S24 Ultra, One UI 9, Android 17, API 37),
+over wireless debugging only, with the phone unattended (screen timeout 30 s
+and a lock screen, both left as they were):
+- `nostrings doctor` now probes each capability without touching the
+  phone's own screen: the connection type, a private display (the hidden
+  screen flags), a tap on that display (input injection), and the screen
+  timeout. All passed. When a probe fails, it names the vendor setting that
+  usually blocks it (Xiaomi, OPPO and OnePlus, vivo, Huawei, Samsung Auto
+  Blocker). Only the Samsung path ran, and no toggle was needed.
+- `smoke --android` failed one check in every run, pinch (`scale: 1.00`).
+  The gesture went out while the fixture's gesture screen was still sliding
+  in from the right, so it hit nothing: the pad read `x 724` in a 724-pixel
+  wide image right after the tap that opened it, and `x 0` a moment later.
+  The emulators showed no such delay. Coordinate actions on an element index
+  (pinch, rotate, scroll, drag, long press) now wait, up to about 1.5 s,
+  until the element's center is on the screen and two reads 80 ms apart
+  agree. Before the change the smoke passed 22 of 23 (only pinch failed);
+  after it, pinch and rotate passed.
+- Once the phone had locked itself, the checks on the phone's own screen
+  (`{foreground: true}`, `moved_to_phone_screen`) failed with `locked`, as
+  documented; they need someone to unlock it. In that run one hidden-screen
+  check also failed: `getApp` after `js_reset` hit the 120 s script limit.
+  The run before it hung for 120 s at the first connect, right after the
+  phone had locked. Neither was reproduced or explained. Later, with the
+  phone unlocked, three runs with the fix passed 23 of 23, 22 of 23 (the
+  failing check was not captured) and 23 of 23. On the `gb_api36` emulator
+  the fix passed 23 of 23 twice.
+- `smoke --android --sessions 2` passed 12 of 12 checks twice: once with the
+  phone awake, and once with it dozing behind the lock screen (`dumpsys
+  power` said Dozing, the keyguard was showing). nostrings woke it, both
+  sessions ran on hidden screens, and top focus stayed on display 0. On a
+  physical phone the display-0 hash is reported, not checked; it did not
+  change. Whether the phone sleeps again a minute after the last action could
+  not be checked: another app on it holds the screen on.
+- Not run: USB (the phone was on wireless debugging only), the adb reconnect
+  and re-pair path (dropping the link could leave the phone unreachable with
+  nobody there to pair it again), and other vendors.
+
+### Android support matrix
+
+What has run, per device and Android version. Hidden-screen sessions need
+Android 14 (API 34); below that, sessions use the phone's own screen.
+
+| Device | Android (API) | Link | `smoke --android` | `--sessions 2` | Notes |
+|---|---|---|---|---|---|
+| Emulator `gb_api34` | 14 (34) | emulator | 23 of 23 | 14 of 14 | |
+| Emulator `gb_api35` | 15 (35) | emulator | 18 of 23 | 14 of 14 | phone-screen launch and web typing fail (open bug) |
+| Emulator `gb_api36` | 16 (36) | emulator | 23 of 23 | 14 of 14 | the development target |
+| Emulator `Medium_Phone_API_37.0` | 17 (37) | emulator | 21 of 23 | 14 of 14 | Play Store image, heavy load after boot |
+| Galaxy S24 Ultra, One UI 9 | 17 (37) | wireless debugging | with the fix: 23, 22, 23 of 23 unlocked; locked: phone-screen checks fail | 12 of 12, also locked and dozing | USB not run |
+| Android 11 and 13 | 11 (30), 13 (33) | | not run | | phone's own screen only |
+| Pixel, Xiaomi, OPPO or OnePlus | | | not run | | no device |
+
 ## macOS capability test
 
 ```bash

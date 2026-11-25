@@ -98,6 +98,55 @@ const COMPETING = [
   [/com\.github\.uiautomator/, "uiautomator2 (Python)"],
 ];
 
+// Settings some vendors add that block shell input or installs. Named by
+// doctor when a probe fails on a phone from that maker.
+export const VENDOR_TOGGLES = [
+  [/xiaomi|redmi|poco/i, 'Developer options > "USB debugging (Security settings)" and "Install via USB" (needs a SIM and a Mi account)'],
+  [/oppo|oneplus|realme/i, 'Developer options > "Disable permission monitoring"'],
+  [/vivo|iqoo/i, 'Developer options > "USB debugging (Security settings)"'],
+  [/huawei|honor/i, 'Developer options > "Allow ADB debugging in charge only mode"'],
+  [/samsung/i, "Settings > Security and privacy > Auto Blocker off (it blocks USB commands)"],
+];
+
+export function vendorToggle(manufacturer) {
+  const hit = VENDOR_TOGGLES.find(([re]) => re.test(String(manufacturer ?? "")));
+  return hit ? hit[1] : null;
+}
+
+// Probes each capability a session needs, without touching the phone's own
+// screen: a private display and a tap on it. Returns [level, label, fix]
+// triples.
+export async function capabilityChecks(backend, serial, { shell = (cmd) => adb(["-s", serial, "shell", cmd]) } = {}) {
+  const out = [];
+  const info = backend.info ?? {};
+  const toggle = vendorToggle(info.manufacturer);
+  const fix = (base) => (toggle ? `${base}; on this phone check ${toggle}` : base);
+  const link = /^emulator-\d+$/.test(serial) ? "the emulator" : /_adb-tls-connect\._tcp|:\d+$/.test(serial) ? "wireless debugging" : "USB";
+  out.push(["info", `${serial}: connected over ${link}`]);
+  if (info.hiddenScreen) {
+    let display = null;
+    try {
+      display = (await backend.request("_createDisplay", { flags: 0x1fdcb, width: 720, height: 1280, dpi: 320 })).displayId;
+      out.push(["ok", `${serial}: hidden screens (private display ${display})`]);
+    } catch (error) {
+      out.push(["fail", `${serial}: hidden screens: ${error.message}`, fix("Sessions fall back to the phone's own screen: pass {foreground: true}")]);
+    }
+    if (display != null) {
+      try {
+        await backend.request("_tapDisplay", { display, x: 10, y: 10 });
+        out.push(["ok", `${serial}: input injection (a tap on the private display)`]);
+      } catch (error) {
+        out.push(["fail", `${serial}: input injection: ${error.message}`, fix("Taps, keys and typing will fail")]);
+      }
+    }
+  } else {
+    out.push(["info", `${serial}: hidden screens need Android 14 (API 34); sessions use the phone's own screen`]);
+  }
+  const timeout = Number((await shell("settings get system screen_off_timeout").catch(() => "")).trim());
+  if (Number.isFinite(timeout) && timeout > 0) out.push(["info", `${serial}: screen sleeps after ${Math.round(timeout / 1000)} s; nostrings keeps it awake (dimmed) while it works and wakes it if asleep`]);
+  return out;
+}
+
 // `nostrings doctor` checks: [{level: "ok"|"fail"|"warn"|"info", label, fix}].
 // A phone with a nostrings server already running is reported, not
 // connected to: connecting would stop that session's server.
@@ -148,6 +197,7 @@ export async function doctorChecks({ client = "nostrings doctor" } = {}) {
       const info = backend.info;
       add("ok", `${serial}: ${info.manufacturer} ${info.model}, Android ${info.release} (API ${info.sdk}), screen ${info.display.join("x")}`);
       add(info.accessibility ? "ok" : "fail", `${serial}: accessibility connection${info.accessibility ? "" : `: ${info.error ?? "failed"}`}`, "Turn off other automation tools, or reboot the phone");
+      if (info.accessibility) for (const check of await capabilityChecks(backend, serial)) add(...check);
     } catch (error) {
       add("fail", `${serial}: nostrings server did not start`, error.message);
     } finally {
