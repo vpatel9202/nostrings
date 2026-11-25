@@ -190,8 +190,10 @@ windows).
   lands as given (`lastRoute` starts with `ax-insert`); it fails with
   `exact_unavailable` when no text element has focus. Click or `focus()` the
   field first. `setValue` also sets text exactly, replacing the whole value.
-- `app.scroll(target, dy = 3, {dx})` or `app.scroll(target, {dy, dx})`.
-  Positive `dy` scrolls down, in lines.
+- `app.scroll(target, dy = 3, {dx, foreground, window})` or
+  `app.scroll(target, {dy, dx, foreground, window})`. Positive `dy` scrolls
+  down, in lines. In the object form the keys other than `dy` and `dx` are
+  options, as in the third argument.
 - `app.drag(from, to)` or `app.drag([[x, y], [x, y], ...])`.
 - `app.setValue(index, value)` sets a field's value directly. Finder file
   names refuse it (Finder would relabel without renaming); rename with a

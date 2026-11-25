@@ -556,6 +556,48 @@ test("action log lines carry route on success and error code on failure", async 
   });
 });
 
+test("scroll: options inside the amount object reach the request", async () => {
+  const requests = [];
+  const logged = [];
+  const ctx = {
+    config: { cursor: false, screenshot: { maxLongSide: 1568, maxPixels: 1_150_000 }, ax: { maxNodes: 800, maxDepth: 40, maxTextLength: 160 } },
+    checkAbort() {},
+    settle: async () => {},
+    cell: 1,
+    log: (entry) => logged.push(entry),
+    out: { text() {} },
+    backend: {
+      async request(method, params) {
+        requests.push({ method, params });
+        if (method === "windows") {
+          return [
+            { index: 0, windowId: 7, frame: [0, 0, 200, 300], scale: 1, title: "A", focused: true },
+            { index: 1, windowId: 8, frame: [0, 0, 200, 300], scale: 1, title: "B", focused: false },
+          ];
+        }
+        if (method === "scroll") return { route: "fake" };
+        return { active: true };
+      },
+    },
+  };
+  const app = new App(ctx, { name: "Calc", pid: 1 });
+  const sent = () => requests.filter((r) => r.method === "scroll").map((r) => r.params);
+  await app.scroll([10, 10], { dx: 15, foreground: true });
+  assert.equal(sent()[0].dx, 15);
+  assert.equal(sent()[0].mode, undefined, "foreground in the object form skips the background route");
+  await app.scroll([10, 10], { dx: 15 }, { foreground: true });
+  assert.equal(sent()[1].mode, undefined, "a third argument still works");
+  await app.scroll([10, 10], 2, { dx: 4, foreground: true });
+  assert.deepEqual([sent()[2].dy, sent()[2].dx, sent()[2].mode], [2, 4, undefined]);
+  await app.scroll([10, 10], { dx: 15 });
+  assert.equal(sent()[3].mode, "background");
+  assert.equal(sent()[3].windowId, 7);
+  await app.scroll([10, 10], { dy: 1, window: 1 });
+  assert.equal(sent()[4].windowId, 8, "window in the object form picks the window");
+  // The broker writes the action log from the requests; the App adds no line.
+  assert.deepEqual(logged.filter((e) => e.action === "scroll"), []);
+});
+
 test("ui.log writes one tagged entry, redacts strings, rejects bad values", async () => {
   const { createApi } = await import("../src/api.mjs");
   const lines = [];

@@ -116,10 +116,12 @@ The set compares exact text, so OCR variants of one line (`O` for `0`) come
 back as separate rows: 685 rows for 400 lines in that run. Dedupe on a field
 you can normalize, such as an ID, when the count matters.
 
-Horizontal scroll may not reach the remote machine. macOS Screen Sharing
-sends no horizontal wheel at all (a real trackpad swipe does not scroll
-either), so `scroll(target, { dx })` does nothing there. Click the
-scrollbar arrows or press arrow keys instead.
+Horizontal scroll may not reach the remote machine. Two remote viewers
+tested on 2026-11-24 drop the horizontal wheel: macOS Screen Sharing to a
+Linux VNC desktop, and a second viewer showing a published Windows app. In
+the second, `scroll(target, {dx})` did nothing in the background or with
+`{foreground: true}`, while clicks on the scrollbar arrows moved the list.
+Click the scrollbar arrows or press arrow keys instead.
 
 Take a screenshot only to check
 layout or visuals that text cannot show. Re-read after a resize: a click

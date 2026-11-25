@@ -225,21 +225,14 @@ export class App {
     }
   }
 
-  // Runs one action and appends it to actions.log when it ends, with the
-  // route it took (lastRoute) or the error code it failed with.
+  // Runs one action and leaves `lastRoute` saying how it got there. It
+  // writes no action-log line: the broker logs each backend request once,
+  // with the route the backend reported (see Broker#hostCall), so the log
+  // has one writer and one source for the route.
   async #act(action, detail, fn) {
     this.#ctx.checkAbort();
-    const device = this.platform === "android" ? { device: this.#backend.label } : {};
-    const entry = { app: this.bundleId ?? this.name, action, ...device, ...detail };
     this.lastRoute = null;
-    let result;
-    try {
-      result = await fn();
-    } catch (error) {
-      this.#ctx.log({ ...entry, ...(this.lastRoute ? { route: this.lastRoute } : {}), error: error.code ?? "error" });
-      throw error;
-    }
-    this.#ctx.log({ ...entry, ...(this.lastRoute ? { route: this.lastRoute } : {}) });
+    const result = await fn();
     await this.#ctx.settle();
     // Android UI animates most changes; a read right after an action would
     // catch it halfway. Wait until the app has been quiet (no accessibility
@@ -882,11 +875,15 @@ export class App {
   }
 
   async scroll(target, amount = 3, options = {}) {
-    const { dy, dx } = typeof amount === "number" ? { dy: amount, dx: options.dx ?? 0 } : { dy: 0, dx: 0, ...amount };
+    // `scroll(t, 3, {dx})`, `scroll(t, {dy, dx})` and `scroll(t, {dy, dx, foreground, window})`:
+    // in the object form every key but dy and dx is an option, and a third
+    // argument still adds to them.
+    const { dy = 0, dx = 0, ...inline } = typeof amount === "number" ? { dy: amount, dx: options.dx ?? 0 } : (amount ?? {});
+    const opts = typeof amount === "number" ? options : { ...inline, ...options };
     return this.#act("scroll", { target: describeTarget(target), dy, dx }, async () => {
-      const [x, y] = await this.#screenPoint(target, options.window);
+      const [x, y] = await this.#screenPoint(target, opts.window);
       await this.#pointCursor([x, y]);
-      await this.#deliver("scroll", { x, y, dy, dx }, options);
+      await this.#deliver("scroll", { x, y, dy, dx }, opts);
     });
   }
 
