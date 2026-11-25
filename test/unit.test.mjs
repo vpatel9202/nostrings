@@ -653,6 +653,22 @@ test("OCR diff: a scroll collapses to one shift line; jitter and plain edits beh
   assert.doesNotMatch(d3, /scrolled|"OK"|"Cancel"/);
 });
 
+test("OCR diff: repeated short texts do not hide a scroll", async () => {
+  const { ocrDiff } = await import("../src/api.mjs");
+  const item = (t, x, y) => `${JSON.stringify(t)} @${x},${y} 40x12`;
+  // 20 rows of unique text plus a gutter of the same short labels on every row,
+  // the way a list shows "Line" or a size field shows "10" many times.
+  const page = (from) => {
+    const out = [];
+    for (let r = 0; r < 20; r++) out.push(item(`Line ${from + r}`, 40, 60 + 15 * r), item("10", 4 + from, 60 + 15 * r), item("M", 200 + from, 60 + 15 * r));
+    return out;
+  };
+  const d = ocrDiff("H", page(1), page(6));
+  assert.match(d, /scrolled: 15 lines moved up 75px/);
+  const printed = d.split("\n").filter((l) => l.startsWith("+ ") && /Line/.test(l));
+  assert.deepEqual(printed.map((l) => l.match(/Line (\d+)/)[1]), ["21", "22", "23", "24", "25"]);
+});
+
 test("cell realm: no fetch, Buffer, URL or string eval; globalThis.constructor is not the host Function", async () => {
   const context = createCellContext({ setTimeout, TextEncoder, console: {} });
   const run = (code) => vm.runInContext(transformCell(code), context);

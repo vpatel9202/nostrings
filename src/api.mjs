@@ -111,8 +111,12 @@ export function ocrDiff(head, before, after) {
   let left = [...prev].flatMap(([l, n]) => Array(n).fill(parseOcrLine(l)));
   ({ rest: added, left } = pairNear(added, left, (dx, dy) => Math.abs(dx) <= 2 && Math.abs(dy) <= 2));
   // One offset (±3 px) shared by most same-text pairs is a scroll.
+  // Vote only with texts that occur once on each side: repeated short texts
+  // ("10", "M") pair with everything and drown the real offset.
+  const count = (xs) => xs.reduce((m, x) => m.set(x.text, (m.get(x.text) ?? 0) + 1), new Map());
+  const na = count(added), nb = count(left);
   const offsets = [];
-  for (const a of added) for (const b of left) if (a.text === b.text) offsets.push([a.x - b.x, a.y - b.y]);
+  for (const a of added) for (const b of left) if (a.text === b.text && na.get(a.text) === 1 && nb.get(b.text) === 1) offsets.push([a.x - b.x, a.y - b.y]);
   let best = null, bestN = 0;
   for (const o of offsets) {
     const n = offsets.filter((p) => Math.abs(p[0] - o[0]) <= 3 && Math.abs(p[1] - o[1]) <= 3).length;
@@ -126,8 +130,8 @@ export function ocrDiff(head, before, after) {
   if (!added.length && !left.length && !moved) return `${head} — no change.`;
   const same = after.length - added.length - moved;
   const tail = [same && `${same} unchanged not shown`, moved && `${moved} shifted`, left.length && `${left.length} gone`].filter(Boolean).join(", ");
-  const dirs = [best?.[1] && `${best[1] < 0 ? "up" : "down"} ${Math.abs(best[1])}px`, best?.[0] && `${best[0] < 0 ? "left" : "right"} ${Math.abs(best[0])}px`].filter(Boolean);
-  const lines = [...(moved ? [`scrolled: ${moved} lines moved ${dirs.join(" and ")}`] : []), ...added.map((a) => `+ ${a.line}`)];
+  const dirs = [Math.abs(best?.[1] ?? 0) > 3 && `${best[1] < 0 ? "up" : "down"} ${Math.abs(best[1])}px`, Math.abs(best?.[0] ?? 0) > 3 && `${best[0] < 0 ? "left" : "right"} ${Math.abs(best[0])}px`].filter(Boolean);
+  const lines = [...(moved ? [`scrolled: ${moved} lines moved ${dirs.join(" and ") || "3 px or less"}`] : []), ...added.map((a) => `+ ${a.line}`)];
   return `${head} — changes since last OCR (+ new or moved${tail ? `; ${tail}` : ""}; {disableDiffing: true} prints all):\n${lines.join("\n")}`;
 }
 
