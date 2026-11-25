@@ -332,6 +332,31 @@ Allowlisted intents and deep links, AppFunctions if shell can call them, the
 on-phone setup through Shizuku, and a separate work profile or a dedicated
 phone for agent apps (see Alternatives).
 
+**Decisions (2026-11-25, emulators API 36 and 37):**
+- **Intents and deep links: shipped**, with approval instead of an allowlist.
+  `phone.open(url | intent)` and `app.open(...)` resolve the handler and ask
+  like opening that app; ask-first apps (Settings, Play Store, wallets...)
+  always ask. An allowlist would duplicate that gate.
+- **AppFunctions: shipped, experimental.** On API 37 the shell user holds
+  `EXECUTE_APP_FUNCTIONS`, and `cmd app_function` lists and runs other apps'
+  functions; on API 36 the service exists but the shell command does not.
+  `phone.appFunctions()` and `phone.callAppFunction()` run it over adb on the
+  host, so the server is unchanged. The service answered "User is not
+  unlocked" or timed out for a minute or two after boot. Of three functions
+  tried, one returned data; two failed inside their apps.
+- **On-phone setup through Shizuku: rejected for now.** Shizuku runs a
+  shell-uid service after wireless-debugging pairing, which would let the
+  server start without a computer. But nostrings' broker, approval dialogs
+  and action log run on the computer, so it would need an on-phone host
+  first. Shizuku also stays on the ask-first list, since it grants shell
+  rights to any app the user approves.
+- **Work profile for agent apps: feasible, not shipped.** From the shell on
+  API 36, `pm create-user --profileOf 0 --managed` made a profile with no
+  device-policy app, `am start-user` started it, and `am start --user 10`
+  opened Settings inside it; `pm remove-user` removed it. Launches into it
+  need a user id in the server's launch and approval paths (a follow-up
+  bead). A dedicated phone needs nothing new.
+
 ## Risk register
 
 The two assumptions most likely to break are that the phone screen keeps

@@ -1646,6 +1646,17 @@ export function createApi(ctx) {
           }
           return list;
         },
+        // AppFunctions apps publish for agents (Android 16+): [{package, id,
+        // enabled, schema}]. Asks first once. {package} limits the list.
+        async appFunctions(options = {}) {
+          ctx.checkAbort();
+          return backend.appFunctions(options);
+        },
+        // Runs one and returns its result document. Asks like opening the app.
+        async callAppFunction(pkg, id, params = {}, options = {}) {
+          ctx.checkAbort();
+          return backend.callAppFunction(pkg, id, params, options);
+        },
         // Copies a file from this computer to the phone (default the
         // Download folder) where apps can pick it, and returns {path, bytes}.
         // Each file asks first.

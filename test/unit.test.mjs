@@ -1312,3 +1312,24 @@ test("Android: a coordinate action on an index waits for a sliding element to st
   assert.equal(scroll[1].x, 362);
   assert.equal(reads, 5);
 });
+
+test("Android AppFunctions: list and result parsing", async () => {
+  const { parseAppFunctions, parseAppFunctionResult } = await import("../src/backends/android.mjs");
+  const listing = `{
+  "com.example.notes": [
+    { "AppFunctionStaticMetadata-com.example.notes": { "functionId": ["createNote"], "schemaName": ["createNote"], "enabledByDefault": [true] } },
+    { "AppFunctionStaticMetadata-com.example.notes": { "functionId": ["wipe"], "enabledByDefault": [false] } },
+    { "AppFunctionRuntimeMetadata-com.example.notes": { "packageName": ["com.example.notes"] } }
+  ]
+}`;
+  assert.deepEqual(parseAppFunctions(listing), [
+    { package: "com.example.notes", id: "createNote", enabled: true, schema: "createNote" },
+    { package: "com.example.notes", id: "wipe", enabled: false },
+  ]);
+  assert.throws(() => parseAppFunctions("No shell command implementation."), { code: "unsupported" });
+  assert.deepEqual(parseAppFunctionResult('{ "androidAppfunctionsReturnValue": [1] }\n__exit=0'), { androidAppfunctionsReturnValue: [1] });
+  assert.throws(() => parseAppFunctionResult("Error executing app function: android.app.appfunctions.AppFunctionException: App function not found. (code 1003)\n__exit=255"), { code: "not_found" });
+  assert.throws(() => parseAppFunctionResult("Timed out\n__exit=0"), { code: "timeout" });
+  assert.throws(() => parseAppFunctionResult("Exception: java.lang.IllegalArgumentException: User is not unlocked\n__exit=255"), { code: "locked" });
+  assert.throws(() => parseAppFunctionResult("Error executing app function: AppFunctionException: Parameter x should be ...\n__exit=255"), { code: "app_function_error" });
+});

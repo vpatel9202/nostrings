@@ -209,6 +209,51 @@ export async function doctorChecks({ client = "nostrings doctor" } = {}) {
 
 const BROKER_LOG = path.join(paths.home, "android-broker.log");
 const NOTIFICATIONS = "android:notifications"; // the approval key for reading the shade
+const APP_FUNCTIONS = "android:appfunctions"; // the approval key for listing app functions
+const PACKAGE_NAME = /^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z0-9_]+)+$/;
+
+// `cmd app_function list-app-functions` prints {package: [{<metadata doc>:
+// {functionId: [id], enabledByDefault: [bool], schemaName: [...], ...}}]}.
+// Returns [{package, id, enabled, schema}].
+export function parseAppFunctions(text) {
+  if (/No shell command implementation|Can't find service/i.test(text)) throw codedError("This Android version has no app_function shell command (AppFunctions need Android 16 or later, and the shell command a later build)", "unsupported");
+  let data;
+  try {
+    data = JSON.parse(text.slice(text.indexOf("{")));
+  } catch {
+    throw codedError(`Unexpected app_function output: ${text.slice(0, 200)}`, "error");
+  }
+  const one = (v) => (Array.isArray(v) ? v[0] : v);
+  const out = [];
+  for (const [pkg, list] of Object.entries(data)) {
+    for (const entry of list ?? []) {
+      for (const doc of Object.values(entry ?? {})) {
+        const id = one(doc?.functionId);
+        if (!id) continue;
+        const schema = one(doc.schemaName);
+        out.push({ package: pkg, id, enabled: one(doc.enabledByDefault) !== false, ...(schema ? { schema } : {}) });
+      }
+    }
+  }
+  return out;
+}
+
+// `execute-app-function` prints a JSON document, or an error line.
+export function parseAppFunctionResult(raw) {
+  const exit = Number(/__exit=(\d+)\s*$/.exec(raw)?.[1] ?? 0);
+  const text = raw.replace(/\n?__exit=\d+\s*$/, "").trim();
+  const start = text.indexOf("{");
+  if (exit !== 0 || start < 0) {
+    const message = text.replace(/^(Exception|Error):\s*/, "").slice(0, 400) || "The function returned nothing";
+    const code = /Timed out/.test(text) ? "timeout" : /not unlocked/.test(text) ? "locked" : /does not exist|not found|No function|unknown function/i.test(text) ? "not_found" : "app_function_error";
+    throw codedError(`App function failed: ${message}`, code);
+  }
+  try {
+    return JSON.parse(text.slice(start));
+  } catch {
+    throw codedError(`Unexpected app_function output: ${text.slice(0, 300)}`, "error");
+  }
+}
 const CLI = path.join(here, "..", "..", "bin", "nostrings.mjs");
 
 // A short hash of the server dex, so a rebuilt server gets its own broker.
@@ -425,6 +470,45 @@ export class AndroidBackend extends EventEmitter {
     const quoted = `'${remote.replace(/'/g, "'\\''")}'`;
     await adb(["-s", this.transport, "shell", `content call --uri content://media --method scan_file --arg ${quoted}`]).catch(() => {});
     return { path: remote, bytes: stat.size };
+  }
+
+  // AppFunctions (Android 16+ shell command, `cmd app_function`): functions
+  // apps publish for agents. Listing asks first once (it shows which apps are
+  // installed); calling one asks like opening that app. Both run over adb.
+  async appFunctions({ package: pkg } = {}) {
+    if (pkg != null && !PACKAGE_NAME.test(pkg)) throw codedError(`Not a package name: ${pkg}`, "bad_request");
+    if (!this.child) await this.connect();
+    await authorize({
+      client: this.client,
+      device: this.label,
+      approved: this.approved,
+      pkg: APP_FUNCTIONS,
+      name: "the phone's app functions",
+      reason: "This lists the functions apps on the phone offer to agents, which shows which apps are installed.",
+      ...(this.prompt ? { prompt: this.prompt } : {}),
+    });
+    const text = await adb(["-s", this.transport, "shell", `cmd app_function list-app-functions${pkg ? ` --package ${pkg}` : ""}`], { timeout: 60_000 });
+    return parseAppFunctions(text);
+  }
+
+  async callAppFunction(pkg, id, params = {}, { timeout = 30 } = {}) {
+    if (!PACKAGE_NAME.test(String(pkg))) throw codedError(`Not a package name: ${pkg}`, "bad_request");
+    if (typeof id !== "string" || !id || id.length > 300) throw codedError("A function id is required", "bad_request");
+    if (!this.child) await this.connect();
+    await authorize({
+      client: this.client,
+      device: this.label,
+      approved: this.approved,
+      pkg,
+      name: this.names.get(pkg),
+      ...(this.prompt ? { prompt: this.prompt } : {}),
+    });
+    const quote = (s) => `'${String(s).replace(/'/g, "'\\''")}'`;
+    const seconds = Math.max(1, Math.min(300, Math.round(Number(timeout) || 30)));
+    const cmd = `cmd app_function execute-app-function --package ${pkg} --function ${quote(id)} --parameters ${quote(JSON.stringify(params ?? {}))} --timeout-duration ${seconds}`;
+    // The command exits non-zero when the function fails; keep its message.
+    const text = (await adb(["-s", this.transport, "shell", `${cmd} 2>&1; echo "__exit=$?"`], { timeout: (seconds + 15) * 1000 })).trim();
+    return parseAppFunctionResult(text);
   }
 
   // Leaves the phone's broker; it closes this session's hidden screens.

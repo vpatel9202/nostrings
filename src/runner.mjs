@@ -127,6 +127,12 @@ function deviceBackend(serial) {
       push(localPath, options = {}) {
         return call("device", "_push", { path: String(localPath), ...(options.to != null ? { to: String(options.to) } : {}) }, { serial, device });
       },
+      appFunctions(options = {}) {
+        return call("device", "_appFunctions", options.package != null ? { package: String(options.package) } : {}, { serial, device });
+      },
+      callAppFunction(pkg, id, params, options = {}) {
+        return call("device", "_callAppFunction", { package: String(pkg), id: String(id), params: params ?? {}, ...(options.timeout != null ? { timeout: Number(options.timeout) } : {}) }, { serial, device });
+      },
     };
     devices.set(key, device);
   }
